@@ -50,7 +50,7 @@ class PositionManager:
 
         # Set dynamic leverage before opening
         trade_leverage = signal.recommended_leverage
-        await self.exchange.set_leverage(trade_leverage)
+        await self.exchange.set_dynamic_leverage(trade_leverage)
 
         # Calculate position size with dynamic leverage
         margin = self.risk_manager.compute_position_size(balance)
@@ -321,20 +321,44 @@ class PositionManager:
                 logger.info("No existing position found on exchange.")
                 return False
 
-            side_str = exchange_pos.get("side", "").lower()
+            # Debug: log raw position data to understand the structure
+            logger.info(f"Raw exchange position keys: {list(exchange_pos.keys())}")
+
+            # ccxt unified format uses 'side' (string)
+            side_str = str(exchange_pos.get("side", "")).lower()
             if side_str == "long":
                 side = Side.LONG
             elif side_str == "short":
                 side = Side.SHORT
             else:
-                logger.warning(f"Unknown position side: {side_str}")
+                logger.warning(f"Unknown position side: '{side_str}'. Raw: {exchange_pos}")
                 return False
 
-            entry_price = float(exchange_pos.get("entryPrice", 0))
-            contracts = float(exchange_pos.get("contracts", 0))
-            leverage = int(float(exchange_pos.get("leverage", self.config.leverage)))
+            # ccxt unified format: entryPrice, contracts, leverage
+            # Also check info dict for raw Binance fields
+            info = exchange_pos.get("info", {})
+
+            entry_price = (
+                self._safe_float(exchange_pos.get("entryPrice"))
+                or self._safe_float(info.get("entryPrice"))
+                or 0
+            )
+            contracts = (
+                self._safe_float(exchange_pos.get("contracts"))
+                or self._safe_float(exchange_pos.get("contractSize"))
+                or self._safe_float(info.get("positionAmt"))
+                or 0
+            )
+            contracts = abs(contracts)  # positionAmt can be negative for shorts
+
+            leverage = int(
+                self._safe_float(exchange_pos.get("leverage"))
+                or self._safe_float(info.get("leverage"))
+                or self.config.leverage
+            )
 
             if entry_price <= 0 or contracts <= 0:
+                logger.warning(f"Invalid position data: entry={entry_price}, contracts={contracts}")
                 return False
 
             # Compute SL/TP from the entry price
@@ -351,21 +375,35 @@ class PositionManager:
                 lowest_price=entry_price,
             )
 
-            notional = contracts * entry_price
-            unrealized_pnl = float(exchange_pos.get("unrealizedPnl", 0))
+            unrealized_pnl = (
+                self._safe_float(exchange_pos.get("unrealizedPnl"))
+                or self._safe_float(info.get("unRealizedProfit"))
+                or 0
+            )
             self.position.pnl_unrealized = unrealized_pnl
 
+            notional = contracts * entry_price
             logger.info(
-                f"♻️ SYNCED existing {side.value.upper()} position from exchange | "
+                f"SYNCED existing {side.value.upper()} position from exchange | "
                 f"Entry: ${entry_price:,.2f} | Qty: {contracts:.6f} BTC | "
-                f"Notional: ${notional:,.2f} | UPnL: ${unrealized_pnl:.4f} | "
-                f"SL: ${sl:,.2f} | TP: ${tp:,.2f}"
+                f"Notional: ${notional:,.2f} | Leverage: {leverage}x | "
+                f"UPnL: ${unrealized_pnl:.4f} | SL: ${sl:,.2f} | TP: ${tp:,.2f}"
             )
             return True
 
         except Exception as e:
-            logger.error(f"Error syncing position from exchange: {e}")
+            logger.error(f"Error syncing position from exchange: {e}", exc_info=True)
             return False
+
+    @staticmethod
+    def _safe_float(val) -> float:
+        """Safely convert a value to float, returning 0 on failure."""
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
 
     def get_position_info(self) -> Optional[dict]:
         """Get current position info for dashboard display."""

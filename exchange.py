@@ -63,20 +63,17 @@ class ExchangeClient:
 
         if not self.config.dry_run:
             try:
-                await self.exchange.fapiPrivate_post_leverage({
-                    "symbol": self.config.raw_symbol,
-                    "leverage": self.config.leverage,
-                })
+                await self.exchange.set_leverage(self.config.leverage, self.config.symbol)
                 self._current_leverage = self.config.leverage
                 logger.info(f"Leverage set to {self.config.leverage}x")
             except Exception as e:
                 logger.warning(f"Could not set leverage: {e}")
 
             try:
-                await self.exchange.fapiPrivate_post_margintype({
-                    "symbol": self.config.raw_symbol,
-                    "marginType": self.config.margin_type.upper(),
-                })
+                await self.exchange.set_margin_mode(
+                    self.config.margin_type.lower(),
+                    self.config.symbol,
+                )
                 logger.info(f"Margin type set to {self.config.margin_type}")
             except Exception as e:
                 if "No need to change" not in str(e):
@@ -88,7 +85,7 @@ class ExchangeClient:
             f"min_qty={self.min_qty} | min_notional={self.min_notional}"
         )
 
-    async def set_leverage(self, leverage: int) -> bool:
+    async def set_dynamic_leverage(self, leverage: int) -> bool:
         """Dynamically change leverage for the next trade."""
         if self.config.dry_run:
             self._current_leverage = leverage
@@ -98,10 +95,7 @@ class ExchangeClient:
             return True
 
         try:
-            await self.exchange.fapiPrivate_post_leverage({
-                "symbol": self.config.raw_symbol,
-                "leverage": leverage,
-            })
+            await self.exchange.set_leverage(leverage, self.config.symbol)
             self._current_leverage = leverage
             logger.info(f"Leverage changed to {leverage}x")
             return True
