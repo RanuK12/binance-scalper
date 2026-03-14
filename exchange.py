@@ -150,9 +150,13 @@ class ExchangeClient:
         notional = usdt_margin * lev
         # Ensure minimum notional with buffer
         if notional < self.min_notional:
-            notional = self.min_notional * 1.005
+            notional = self.min_notional * 1.05
         qty = notional / price
         qty = round_quantity(qty, self.step_size)
+        # After rounding, verify notional still meets minimum
+        if qty * price < self.min_notional and self.step_size > 0:
+            qty += self.step_size
+            qty = round_quantity(qty, self.step_size)
         return qty
 
     async def place_market_order(self, side: Side, quantity: float, price: float | None = None) -> dict:
@@ -200,6 +204,7 @@ class ExchangeClient:
         if self.config.dry_run:
             fill_price = price or await self.fetch_ticker_price()
             pos = self._dry_position
+            pnl = 0.0
             if pos:
                 entry = pos["entry_price"]
                 if side == Side.LONG:
@@ -210,18 +215,18 @@ class ExchangeClient:
                 self._dry_balance += pos["margin"] + pnl
                 self._dry_position = None
 
-                logger.info(
-                    f"[DRY-RUN] CLOSE {order_side.upper()} {quantity:.6f} BTC @ ${fill_price:,.2f} "
-                    f"(PnL: ${pnl:+.4f})"
-                )
-                return {
-                    "id": f"dry_close_{int(time.time())}",
-                    "price": fill_price,
-                    "amount": quantity,
-                    "side": order_side,
-                    "status": "closed",
-                    "pnl": pnl,
-                }
+            logger.info(
+                f"[DRY-RUN] CLOSE {order_side.upper()} {quantity:.6f} BTC @ ${fill_price:,.2f} "
+                f"(PnL: ${pnl:+.4f})"
+            )
+            return {
+                "id": f"dry_close_{int(time.time())}",
+                "price": fill_price,
+                "amount": quantity,
+                "side": order_side,
+                "status": "closed",
+                "pnl": pnl,
+            }
 
         order = await self.exchange.create_market_order(
             self.config.symbol,
