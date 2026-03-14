@@ -1,0 +1,135 @@
+"""Risk management module - protects capital and enforces trading rules."""
+
+import logging
+import time
+
+from config import BotConfig
+from models import Side, Signal
+
+logger = logging.getLogger("scalper")
+
+
+class RiskManager:
+    """Enforces risk management rules before and during trades."""
+
+    def __init__(self, config: BotConfig, initial_balance: float):
+        self.config = config
+        self.daily_starting_balance = initial_balance
+        self.daily_pnl: float = 0.0
+        self.total_pnl: float = 0.0
+        self.consecutive_losses: int = 0
+        self.last_trade_time: float = 0.0
+        self.in_cooldown: bool = False
+        self.cooldown_until: float = 0.0
+        self.total_trades: int = 0
+        self.winning_trades: int = 0
+        self.losing_trades: int = 0
+
+    def can_open_trade(self, balance: float, signal: Signal) -> tuple[bool, str]:
+        """Check if a new trade is allowed under risk rules."""
+        now = time.time()
+
+        # Check 1: daily loss limit
+        max_loss = self.daily_starting_balance * self.config.max_daily_loss_pct
+        if self.daily_pnl <= -max_loss:
+            return False, f"Daily loss limit reached (${self.daily_pnl:.2f} / -${max_loss:.2f})"
+
+        # Check 2: consecutive losses cooldown
+        if self.in_cooldown and now < self.cooldown_until:
+            remaining = int(self.cooldown_until - now)
+            return False, f"Cooldown active ({remaining}s remaining)"
+
+        # Reset cooldown if expired
+        if self.in_cooldown and now >= self.cooldown_until:
+            self.in_cooldown = False
+            self.consecutive_losses = 0
+            logger.info("Cooldown expired. Resuming trading.")
+
+        # Check 3: minimum time between trades
+        if now - self.last_trade_time < self.config.min_time_between_trades_sec:
+            remaining = int(self.config.min_time_between_trades_sec - (now - self.last_trade_time))
+            return False, f"Min time between trades ({remaining}s remaining)"
+
+        # Check 4: balance too low
+        if balance < 1.0:
+            return False, f"Balance too low (${balance:.2f})"
+
+        # Check 5: minimum notional check
+        min_margin = 5.0 / self.config.leverage  # $5 min notional
+        if balance * self.config.max_position_pct < min_margin:
+            return False, f"Insufficient margin for minimum notional"
+
+        return True, "ok"
+
+    def compute_position_size(self, balance: float) -> float:
+        """Compute the margin to use for a new position."""
+        margin = balance * self.config.max_position_pct
+        return margin
+
+    def compute_stop_take(self, entry_price: float, side: Side) -> tuple[float, float]:
+        """Compute stop-loss and take-profit prices."""
+        if side == Side.LONG:
+            sl = entry_price * (1 - self.config.stop_loss_pct)
+            tp = entry_price * (1 + self.config.take_profit_pct)
+        else:
+            sl = entry_price * (1 + self.config.stop_loss_pct)
+            tp = entry_price * (1 - self.config.take_profit_pct)
+        return sl, tp
+
+    def record_trade_result(self, pnl: float) -> None:
+        """Record the result of a completed trade."""
+        self.daily_pnl += pnl
+        self.total_pnl += pnl
+        self.total_trades += 1
+        self.last_trade_time = time.time()
+
+        if pnl < 0:
+            self.consecutive_losses += 1
+            self.losing_trades += 1
+            logger.warning(
+                f"Loss #{self.consecutive_losses}: ${pnl:.4f} | "
+                f"Daily P&L: ${self.daily_pnl:.4f}"
+            )
+
+            if self.consecutive_losses >= self.config.max_consecutive_losses:
+                self.in_cooldown = True
+                self.cooldown_until = time.time() + self.config.cooldown_seconds
+                logger.warning(
+                    f"Max consecutive losses ({self.config.max_consecutive_losses}) reached! "
+                    f"Cooldown for {self.config.cooldown_seconds}s"
+                )
+        else:
+            self.consecutive_losses = 0
+            self.in_cooldown = False
+            self.winning_trades += 1
+            logger.info(
+                f"Win! +${pnl:.4f} | Daily P&L: ${self.daily_pnl:.4f}"
+            )
+
+    def reset_daily(self, balance: float) -> None:
+        """Reset daily tracking (call at UTC midnight)."""
+        logger.info(
+            f"Daily reset. Previous day P&L: ${self.daily_pnl:.4f} | "
+            f"New starting balance: ${balance:.2f}"
+        )
+        self.daily_starting_balance = balance
+        self.daily_pnl = 0.0
+
+    @property
+    def win_rate(self) -> float:
+        if self.total_trades == 0:
+            return 0.0
+        return self.winning_trades / self.total_trades
+
+    def get_stats(self) -> dict:
+        """Get current risk manager statistics."""
+        return {
+            "total_trades": self.total_trades,
+            "winning": self.winning_trades,
+            "losing": self.losing_trades,
+            "win_rate": f"{self.win_rate * 100:.1f}%",
+            "daily_pnl": self.daily_pnl,
+            "total_pnl": self.total_pnl,
+            "consecutive_losses": self.consecutive_losses,
+            "in_cooldown": self.in_cooldown,
+        }
