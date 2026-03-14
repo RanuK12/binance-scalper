@@ -66,14 +66,30 @@ class RiskManager:
         margin = balance * self.config.max_position_pct
         return margin
 
-    def compute_stop_take(self, entry_price: float, side: Side) -> tuple[float, float]:
-        """Compute stop-loss and take-profit prices."""
-        if side == Side.LONG:
-            sl = entry_price * (1 - self.config.stop_loss_pct)
-            tp = entry_price * (1 + self.config.take_profit_pct)
+    def compute_stop_take(self, entry_price: float, side: Side, atr_pct: float = 0.0) -> tuple[float, float]:
+        """
+        Compute stop-loss and take-profit prices.
+        If atr_pct > 0, uses ATR-based dynamic SL/TP for smarter exits.
+        """
+        if atr_pct > 0:
+            # Dynamic SL/TP based on ATR — adapts to current volatility
+            dynamic_sl = atr_pct * 1.5
+            dynamic_tp = atr_pct * 2.5   # R:R ratio ~1.67
+            # Clamp within safe bounds
+            sl_pct = max(0.0015, min(dynamic_sl, 0.006))
+            tp_pct = max(0.0025, min(dynamic_tp, 0.010))
         else:
-            sl = entry_price * (1 + self.config.stop_loss_pct)
-            tp = entry_price * (1 - self.config.take_profit_pct)
+            sl_pct = self.config.stop_loss_pct
+            tp_pct = self.config.take_profit_pct
+
+        if side == Side.LONG:
+            sl = entry_price * (1 - sl_pct)
+            tp = entry_price * (1 + tp_pct)
+        else:
+            sl = entry_price * (1 + sl_pct)
+            tp = entry_price * (1 - tp_pct)
+
+        logger.info(f"SL/TP set: SL={sl_pct*100:.2f}% TP={tp_pct*100:.2f}% (ATR-based: {atr_pct > 0})")
         return sl, tp
 
     def record_trade_result(self, pnl: float) -> None:

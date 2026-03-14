@@ -17,7 +17,8 @@ class BotConfig:
     raw_symbol: str = "BTCUSDT"
 
     # --- Leverage & position ---
-    leverage: int = 15
+    leverage: int = 15                    # base leverage (low confidence)
+    max_leverage: int = 45               # max leverage (extreme confidence)
     margin_type: str = "isolated"
     max_position_pct: float = 1.0
     max_open_positions: int = 1
@@ -35,15 +36,18 @@ class BotConfig:
     volume_avg_period: int = 20
     orderbook_depth: int = 10
 
-    # --- Scoring weights ---
+    # --- Scoring weights (v3.0) ---
     score_threshold_long: float = 3.0
     score_threshold_short: float = 3.0
     w_ema_cross: float = 2.0
-    w_rsi: float = 1.0
+    w_rsi: float = 1.5
     w_volume: float = 1.0
     w_bollinger: float = 1.5
     w_vwap: float = 0.5
     w_orderbook: float = 1.5
+    w_macd: float = 1.5
+    w_htf_trend: float = 1.0
+    w_rsi_divergence: float = 1.5
 
     # --- Risk management ---
     stop_loss_pct: float = 0.003      # 0.3%

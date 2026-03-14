@@ -32,6 +32,7 @@ class PositionManager:
     async def open_position(self, signal: Signal, current_price: float) -> bool:
         """
         Attempt to open a new position based on a signal.
+        Uses dynamic leverage from signal recommendation.
         Returns True if the position was opened successfully.
         """
         if self.position is not None:
@@ -47,15 +48,18 @@ class PositionManager:
             logger.info(f"Trade blocked by risk manager: {reason}")
             return False
 
-        # Calculate position size
+        # Set dynamic leverage before opening
+        trade_leverage = signal.recommended_leverage
+        await self.exchange.set_leverage(trade_leverage)
+
+        # Calculate position size with dynamic leverage
         margin = self.risk_manager.compute_position_size(balance)
-        quantity = self.exchange.calculate_quantity(margin, current_price)
+        quantity = self.exchange.calculate_quantity(margin, current_price, trade_leverage)
 
         if quantity <= 0:
             logger.warning(f"Calculated quantity is 0. Margin: ${margin:.2f}, Price: ${current_price:,.2f}")
             return False
 
-        # Check minimum quantity
         if quantity < self.exchange.min_qty:
             logger.warning(
                 f"Quantity {quantity} below minimum {self.exchange.min_qty}. "
@@ -77,15 +81,16 @@ class PositionManager:
         if fill_price == 0:
             fill_price = current_price
 
-        # Compute SL/TP
-        sl, tp = self.risk_manager.compute_stop_take(fill_price, signal.side)
+        # Compute dynamic SL/TP based on ATR
+        atr_pct = signal.indicators.atr_pct if signal.indicators else 0
+        sl, tp = self.risk_manager.compute_stop_take(fill_price, signal.side, atr_pct)
 
         # Create position
         self.position = Position(
             side=signal.side,
             entry_price=fill_price,
             quantity=quantity,
-            leverage=self.config.leverage,
+            leverage=trade_leverage,
             stop_loss=sl,
             take_profit=tp,
             highest_price=fill_price,
@@ -94,12 +99,12 @@ class PositionManager:
         self._last_signal_score = signal.score
 
         notional = quantity * fill_price
-        side_emoji = "🟢" if signal.side == Side.LONG else "🔴"
 
         logger.info(
-            f"{side_emoji} POSITION OPENED: {signal.side.value.upper()} | "
+            f"POSITION OPENED: {signal.side.value.upper()} | "
             f"Entry: ${fill_price:,.2f} | Qty: {quantity:.6f} BTC | "
             f"Notional: ${notional:,.2f} | Margin: ${margin:.2f} | "
+            f"Leverage: {trade_leverage}x | "
             f"SL: ${sl:,.2f} | TP: ${tp:,.2f} | Score: {signal.score:.1f}"
         )
 

@@ -25,6 +25,20 @@ class IndicatorSnapshot:
     orderbook_imbalance: float   # positive = bid-heavy, negative = ask-heavy
     close_price: float
     timestamp: float
+    # v3.0 advanced fields
+    macd: float = 0.0
+    macd_signal: float = 0.0
+    macd_histogram: float = 0.0
+    atr: float = 0.0
+    atr_pct: float = 0.0          # ATR as % of price
+    rsi_prev: float = 50.0
+    price_prev: float = 0.0
+    bb_width: float = 0.0         # BB squeeze detection
+    volume_delta: float = 0.0     # buy vol - sell vol estimate
+    consecutive_green: int = 0
+    consecutive_red: int = 0
+    htf_ema_fast: float = 0.0     # higher timeframe EMA (25-period as 5m proxy)
+    htf_ema_slow: float = 0.0     # higher timeframe EMA (65-period as 5m proxy)
 
 
 @dataclass
@@ -33,6 +47,7 @@ class Signal:
     side: Side
     score: float
     indicators: IndicatorSnapshot
+    recommended_leverage: int = 15   # dynamic leverage recommendation
     timestamp: float = field(default_factory=time.time)
 
 
