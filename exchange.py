@@ -22,7 +22,10 @@ class ExchangeClient:
             "apiKey": config.api_key,
             "secret": config.api_secret,
             "enableRateLimit": True,
-            "options": {"defaultType": "future"},
+            "options": {
+                "defaultType": "future",
+                "fetchCurrencies": False,  # Skip spot API call that gets geo-blocked
+            },
         })
         if config.testnet:
             self.exchange.set_sandbox_mode(True)
@@ -32,6 +35,7 @@ class ExchangeClient:
         self.step_size: float = 0.001
         self.min_notional: float = 5.0
         self.min_qty: float = 0.001
+        self._current_leverage: int = config.leverage
 
         # Dry-run state
         self._dry_balance: float = 10.0
@@ -63,6 +67,7 @@ class ExchangeClient:
                     "symbol": self.config.raw_symbol,
                     "leverage": self.config.leverage,
                 })
+                self._current_leverage = self.config.leverage
                 logger.info(f"Leverage set to {self.config.leverage}x")
             except Exception as e:
                 logger.warning(f"Could not set leverage: {e}")
@@ -74,7 +79,6 @@ class ExchangeClient:
                 })
                 logger.info(f"Margin type set to {self.config.margin_type}")
             except Exception as e:
-                # Already set to this margin type
                 if "No need to change" not in str(e):
                     logger.warning(f"Could not set margin type: {e}")
 
@@ -83,6 +87,27 @@ class ExchangeClient:
             f"tick={self.tick_size} | step={self.step_size} | "
             f"min_qty={self.min_qty} | min_notional={self.min_notional}"
         )
+
+    async def set_leverage(self, leverage: int) -> bool:
+        """Dynamically change leverage for the next trade."""
+        if self.config.dry_run:
+            self._current_leverage = leverage
+            return True
+
+        if leverage == self._current_leverage:
+            return True
+
+        try:
+            await self.exchange.fapiPrivate_post_leverage({
+                "symbol": self.config.raw_symbol,
+                "leverage": leverage,
+            })
+            self._current_leverage = leverage
+            logger.info(f"Leverage changed to {leverage}x")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set leverage to {leverage}x: {e}")
+            return False
 
     @retry_async(max_retries=3)
     async def fetch_balance(self) -> float:
@@ -125,9 +150,10 @@ class ExchangeClient:
                 return pos
         return None
 
-    def calculate_quantity(self, usdt_margin: float, price: float) -> float:
+    def calculate_quantity(self, usdt_margin: float, price: float, leverage: int | None = None) -> float:
         """Calculate order quantity from margin amount."""
-        notional = usdt_margin * self.config.leverage
+        lev = leverage or self._current_leverage
+        notional = usdt_margin * lev
         # Ensure minimum notional with buffer
         if notional < self.min_notional:
             notional = self.min_notional * 1.005
@@ -142,7 +168,7 @@ class ExchangeClient:
         if self.config.dry_run:
             fill_price = price or await self.fetch_ticker_price()
             notional = quantity * fill_price
-            margin_used = notional / self.config.leverage
+            margin_used = notional / self._current_leverage
 
             self._dry_balance -= margin_used
             self._dry_position = {
@@ -169,7 +195,7 @@ class ExchangeClient:
             order_side,
             quantity,
         )
-        logger.info(f"Order placed: {order_side.upper()} {quantity:.6f} @ market")
+        logger.info(f"Order placed: {order_side.upper()} {quantity:.6f} @ market (leverage: {self._current_leverage}x)")
         return order
 
     async def close_position_market(self, side: Side, quantity: float, price: float | None = None) -> dict:
