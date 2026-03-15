@@ -30,11 +30,12 @@ from bot_state import (
 )
 from config import load_config, BotConfig
 from dashboard import DASHBOARD_HTML
+from learner import AdaptiveLearner
 from market_analysis import generate_market_analysis
 from data_feed import DataFeed
 from exchange import ExchangeClient
 from logger_setup import setup_logging
-from models import Side
+from models import Side, Signal
 from position_manager import PositionManager
 from risk_manager import RiskManager
 from strategy import ScalpingStrategy
@@ -95,6 +96,9 @@ def emit_state_update(state: dict):
 async def position_monitor_loop(
     position_manager: PositionManager,
     data_feed: DataFeed,
+    learner: AdaptiveLearner,
+    last_indicators_ref: list,
+    strategy_ref: list,
 ):
     """Monitor position on every price tick (runs every 200ms)."""
     verify_counter = 0
@@ -105,6 +109,14 @@ async def position_monitor_loop(
                 trade = await position_manager.monitor_position(price)
                 if trade:
                     add_trade_to_history(trade)
+                    # Record trade in learner with context
+                    strat = strategy_ref[0] if strategy_ref else None
+                    learner.record_trade(
+                        trade,
+                        indicators=last_indicators_ref[0] if last_indicators_ref else None,
+                        had_crossover=strat.last_had_crossover if strat else False,
+                        htf_aligned=strat.last_htf_aligned if strat else False,
+                    )
                     logger.info(f"Position closed by monitor loop: {trade.exit_reason}")
 
                 # Verify position exists on Binance every ~30 seconds
@@ -319,6 +331,13 @@ async def main():
     risk_manager = RiskManager(config, max(initial_balance, 10.0))
     strategy = ScalpingStrategy(config)
     position_manager = PositionManager(config, exchange, risk_manager)
+    learner = AdaptiveLearner()
+
+    logger.info(
+        f"Learner loaded: threshold adj={learner.state.score_threshold_adj:+.1f}, "
+        f"leverage mult={learner.state.leverage_multiplier:.2f}, "
+        f"min volume={learner.state.min_volume_ratio:.1f}x"
+    )
 
     # Sync existing position from Binance
     has_position = await position_manager.sync_position_from_exchange()
@@ -348,8 +367,14 @@ async def main():
 
     logger.info("Bot is ready. Listening for signals...")
 
+    # Shared references for monitor loop access
+    _last_indicators_ref = [{}]  # mutable ref for monitor loop
+    _strategy_ref = [strategy]
+
     # Start background tasks
-    monitor_task = asyncio.create_task(position_monitor_loop(position_manager, data_feed))
+    monitor_task = asyncio.create_task(
+        position_monitor_loop(position_manager, data_feed, learner, _last_indicators_ref, _strategy_ref)
+    )
     daily_task = asyncio.create_task(daily_reset_loop(risk_manager, exchange))
 
     last_scores = (0.0, 0.0)
@@ -392,6 +417,7 @@ async def main():
                     config, free_bal, equity, position_manager, risk_manager,
                     data_feed.get_last_price(), last_indicators_dict, last_scores,
                     status, last_score_breakdown, last_analysis,
+                    learner_stats=learner.get_stats(),
                 )
                 update_shared_state(state)
                 emit_state_update(state)
@@ -414,6 +440,7 @@ async def main():
                     last_indicators_obj = indicators
                     last_indicators_dict = build_indicators_dict(indicators)
                     last_score_breakdown = build_score_breakdown(indicators, config)
+                    _last_indicators_ref[0] = last_indicators_dict  # update shared ref
 
                 # Evaluate signal
                 signal_result = strategy.evaluate(indicators)
@@ -459,24 +486,53 @@ async def main():
                     config, free_bal, equity, position_manager, risk_manager,
                     price, last_indicators_dict, last_scores, status,
                     last_score_breakdown, last_analysis,
+                    learner_stats=learner.get_stats(),
                 )
                 update_shared_state(state)
                 emit_state_update(state)
 
-                # If no position and we have a signal, try to open
+                # If no position and we have a signal, apply learner filters then open
                 if position_manager.position is None and signal_result is not None:
-                    opened = await position_manager.open_position(signal_result, price)
-                    if opened:
-                        # Refresh state after opening
-                        free_bal, equity = await compute_equity(exchange, position_manager)
-                        state = build_state(
-                            config, free_bal, equity, position_manager, risk_manager,
-                            price, last_indicators_dict, last_scores,
-                            f"Posicion {signal_result.side.value.upper()} abierta | Lev: {signal_result.recommended_leverage}x",
-                            last_score_breakdown, last_analysis,
+                    # ─── Learner filters ───
+                    skip, skip_reason = learner.should_skip_trade(
+                        last_indicators_dict, strategy.last_had_crossover
+                    )
+                    if not skip:
+                        # Check anti-HTF filter
+                        is_long = signal_result.side == Side.LONG
+                        if learner.should_skip_against_htf(is_long, last_indicators_dict):
+                            skip = True
+                            skip_reason = "Learner: against-HTF trades unprofitable"
+
+                    if skip:
+                        logger.info(f"Trade BLOCKED by learner: {skip_reason}")
+                        status = f"Senal bloqueada: {skip_reason}"
+                    else:
+                        # Apply learner leverage adjustment
+                        original_lev = signal_result.recommended_leverage
+                        adjusted_lev = learner.get_effective_leverage(original_lev, config.leverage)
+                        signal_result = Signal(
+                            side=signal_result.side,
+                            score=signal_result.score,
+                            indicators=signal_result.indicators,
+                            recommended_leverage=adjusted_lev,
                         )
-                        update_shared_state(state)
-                        emit_state_update(state)
+                        if adjusted_lev != original_lev:
+                            logger.info(f"Learner adjusted leverage: {original_lev}x -> {adjusted_lev}x")
+
+                        opened = await position_manager.open_position(signal_result, price)
+                        if opened:
+                            # Refresh state after opening
+                            free_bal, equity = await compute_equity(exchange, position_manager)
+                            state = build_state(
+                                config, free_bal, equity, position_manager, risk_manager,
+                                price, last_indicators_dict, last_scores,
+                                f"Posicion {signal_result.side.value.upper()} abierta | Lev: {adjusted_lev}x",
+                                last_score_breakdown, last_analysis,
+                                learner_stats=learner.get_stats(),
+                            )
+                            update_shared_state(state)
+                            emit_state_update(state)
 
             finally:
                 _processing_signal = False
@@ -506,6 +562,12 @@ async def main():
             trade = await position_manager.force_close("shutdown")
             if trade:
                 add_trade_to_history(trade)
+                learner.record_trade(
+                    trade,
+                    indicators=_last_indicators_ref[0] if _last_indicators_ref else None,
+                    had_crossover=strategy.last_had_crossover,
+                    htf_aligned=strategy.last_htf_aligned,
+                )
 
         # Stop data feed
         await data_feed.stop()

@@ -301,6 +301,35 @@ DASHBOARD_HTML = r"""
             </div>
         </div>
 
+        <!-- Self-Learning -->
+        <div class="section" id="learnerSection">
+            <div class="section-title"><span class="dot" style="background:#bb86fc"></span> Auto-Learning Engine</div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
+                <div class="risk-item">
+                    <div class="risk-label">Threshold Adj</div>
+                    <div class="risk-value yellow" id="lrnThreshAdj">+0.0</div>
+                    <div style="font-size:0.65em;color:var(--text3);margin-top:2px;">Effective: <span id="lrnEffThresh">4.0</span></div>
+                </div>
+                <div class="risk-item">
+                    <div class="risk-label">Leverage Mult</div>
+                    <div class="risk-value" id="lrnLevMult">1.00x</div>
+                    <div style="font-size:0.65em;color:var(--text3);margin-top:2px;">Eff. max: <span id="lrnEffMaxLev">45x</span></div>
+                </div>
+                <div class="risk-item">
+                    <div class="risk-label">Rolling WR</div>
+                    <div class="risk-value" id="lrnRollingWr">50%</div>
+                    <div class="risk-bar"><div class="risk-bar-fill" id="lrnWrBar" style="width:50%;background:var(--green);"></div></div>
+                </div>
+                <div class="risk-item">
+                    <div class="risk-label">Streak</div>
+                    <div class="risk-value" id="lrnStreak">0</div>
+                    <div style="font-size:0.65em;color:var(--text3);margin-top:2px;">Max loss: <span id="lrnMaxStreak">0</span></div>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;" id="lrnConditions"></div>
+            <div id="lrnAdjustments" style="font-size:0.75em;color:var(--text3);"></div>
+        </div>
+
         <!-- Trade History -->
         <div class="section">
             <div class="section-title"><span class="dot" style="background:var(--purple)"></span> Trade History</div>
@@ -611,6 +640,70 @@ DASHBOARD_HTML = r"""
             condHtml += '<li><span class="cond-dot" style="background:' + dotColor + '"></span>' + c + '</li>';
         }
         document.getElementById('analysisConditions').innerHTML = condHtml;
+
+        // ─── Self-Learning ───
+        let lrn = s.learner || {};
+        if (lrn.score_threshold_adj !== undefined) {
+            let adj = lrn.score_threshold_adj || 0;
+            document.getElementById('lrnThreshAdj').textContent = (adj >= 0 ? '+' : '') + adj.toFixed(1);
+            document.getElementById('lrnThreshAdj').className = 'risk-value ' + (adj > 0 ? 'yellow' : 'green');
+            document.getElementById('lrnEffThresh').textContent = (4.0 + adj).toFixed(1);
+
+            let lm = lrn.leverage_multiplier || 1;
+            document.getElementById('lrnLevMult').textContent = lm.toFixed(2) + 'x';
+            document.getElementById('lrnLevMult').className = 'risk-value ' + (lm < 0.6 ? 'red' : lm < 0.9 ? 'yellow' : 'green');
+            document.getElementById('lrnEffMaxLev').textContent = Math.round(45 * lm) + 'x';
+
+            let rwr = lrn.rolling_win_rate || 0;
+            document.getElementById('lrnRollingWr').textContent = rwr.toFixed(0) + '%';
+            document.getElementById('lrnRollingWr').className = 'risk-value ' + (rwr >= 55 ? 'green' : rwr >= 45 ? 'yellow' : 'red');
+            document.getElementById('lrnWrBar').style.width = rwr + '%';
+            document.getElementById('lrnWrBar').style.background = rwr >= 55 ? 'var(--green)' : rwr >= 45 ? 'var(--yellow)' : 'var(--red)';
+
+            let streak = lrn.current_streak || 0;
+            document.getElementById('lrnStreak').textContent = (streak > 0 ? '+' : '') + streak;
+            document.getElementById('lrnStreak').className = 'risk-value ' + (streak > 0 ? 'green' : streak < -2 ? 'red' : 'yellow');
+            document.getElementById('lrnMaxStreak').textContent = lrn.max_losing_streak || 0;
+
+            // Condition stats
+            let cs = lrn.condition_stats || {};
+            let csHtml = '';
+            let csLabels = {
+                htf_aligned: 'HTF Aligned', htf_against: 'HTF Against',
+                high_volume: 'High Volume', low_volume: 'Low Volume',
+                had_crossover: 'Crossover', no_crossover: 'No Cross',
+                rsi_extreme: 'RSI Extreme', rsi_neutral: 'RSI Neutral',
+                high_leverage: 'High Lev', low_leverage: 'Low Lev',
+                tight_bb: 'Tight BB', wide_bb: 'Wide BB'
+            };
+            for (let key of Object.keys(csLabels)) {
+                let d = cs[key];
+                if (d && d.total > 0) {
+                    let wrC = d.win_rate >= 55 ? 'green' : d.win_rate >= 40 ? 'yellow' : 'red';
+                    csHtml += '<div style="background:var(--bg3);padding:6px;border-radius:4px;text-align:center;">' +
+                        '<div style="font-size:0.65em;color:var(--text3);text-transform:uppercase;">' + csLabels[key] + '</div>' +
+                        '<div style="font-family:monospace;font-weight:600;" class="' + wrC + '">' + d.win_rate.toFixed(0) + '%</div>' +
+                        '<div style="font-size:0.6em;color:var(--text3);">' + d.wins + 'W/' + d.losses + 'L</div>' +
+                    '</div>';
+                }
+            }
+            document.getElementById('lrnConditions').innerHTML = csHtml || '<div style="color:var(--text3);font-size:0.8em;grid-column:1/4;text-align:center;">Esperando trades para aprender...</div>';
+
+            // Recent adjustments
+            let adjs = lrn.recent_adjustments || [];
+            if (adjs.length > 0) {
+                let lastAdj = adjs[adjs.length - 1];
+                let adjHtml = '<div style="margin-top:4px;padding:6px;background:var(--bg3);border-radius:4px;">' +
+                    '<span style="color:var(--purple);font-weight:600;">Ultimo ajuste</span> ' +
+                    '<span style="color:var(--text3);">(trade #' + (lastAdj.trades || '?') + ', WR: ' + (lastAdj.win_rate || 0) + '%)</span><br>';
+                let adjList = lastAdj.adjustments || [];
+                for (let a of adjList) {
+                    adjHtml += '<span style="color:var(--yellow);">- ' + a + '</span><br>';
+                }
+                adjHtml += '</div>';
+                document.getElementById('lrnAdjustments').innerHTML = adjHtml;
+            }
+        }
 
         // ─── Equity Chart ───
         drawEquityChart(s.equity_history || []);
