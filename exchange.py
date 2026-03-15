@@ -1,6 +1,8 @@
 """Binance Futures exchange client wrapper using ccxt."""
 
+import asyncio
 import logging
+import os
 import time
 
 import ccxt.async_support as ccxt
@@ -12,13 +14,25 @@ from utils import retry_async, round_quantity, round_price
 
 logger = logging.getLogger("scalper")
 
+# Alternative Binance hostnames for geo-restricted regions
+_BINANCE_HOSTNAMES = [
+    None,           # default (fapi.binance.com)
+    "binance.me",
+    "binance1.com",
+    "binance2.com",
+    "binance3.com",
+    "binance4.com",
+]
+
 
 class ExchangeClient:
     """Wrapper around ccxt for Binance USD-M Futures."""
 
     def __init__(self, config: BotConfig):
         self.config = config
-        self.exchange = ccxt.binanceusdm({
+        # Allow hostname override via env var
+        hostname = os.environ.get("BINANCE_HOSTNAME", "").strip() or None
+        exchange_opts = {
             "apiKey": config.api_key,
             "secret": config.api_secret,
             "enableRateLimit": True,
@@ -26,7 +40,12 @@ class ExchangeClient:
                 "defaultType": "future",
                 "fetchCurrencies": False,  # Skip spot API call that gets geo-blocked
             },
-        })
+        }
+        if hostname:
+            exchange_opts["hostname"] = hostname
+            logger.info(f"Using custom Binance hostname: {hostname}")
+
+        self.exchange = ccxt.binanceusdm(exchange_opts)
         if config.testnet:
             self.exchange.set_sandbox_mode(True)
 
@@ -42,9 +61,51 @@ class ExchangeClient:
         self._dry_position: dict | None = None
 
     async def initialize(self) -> None:
-        """Load markets and configure leverage/margin type."""
+        """Load markets and configure leverage/margin type.
+        Retries with alternative Binance hostnames if geo-blocked (451).
+        """
         logger.info("Initializing exchange connection...")
-        await self.exchange.load_markets()
+
+        # Try default hostname first, then alternatives if geo-blocked
+        hostnames_to_try = _BINANCE_HOSTNAMES.copy()
+        # If a custom hostname is already set, just retry with it
+        current_hostname = getattr(self.exchange, 'hostname', None)
+        if current_hostname:
+            hostnames_to_try = [current_hostname]
+
+        last_error = None
+        for hostname in hostnames_to_try:
+            try:
+                if hostname and hostname != current_hostname:
+                    logger.info(f"Trying Binance hostname: {hostname}")
+                    self.exchange.hostname = hostname
+                    # Reset markets cache to force reload
+                    self.exchange.markets = None
+                    self.exchange.markets_by_id = None
+
+                await self.exchange.load_markets()
+                if hostname:
+                    logger.info(f"Connected successfully via {hostname}")
+                break  # Success
+            except ccxt.ExchangeNotAvailable as e:
+                last_error = e
+                if "451" in str(e):
+                    logger.warning(f"Geo-blocked{' on ' + hostname if hostname else ''}: {e}")
+                    # Try next hostname
+                    continue
+                else:
+                    raise  # Non-geo-block error, don't retry
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Connection failed{' on ' + hostname if hostname else ''}: {e}")
+                if hostname == hostnames_to_try[-1]:
+                    raise
+                await asyncio.sleep(2)
+                continue
+        else:
+            # All hostnames exhausted
+            logger.error("All Binance hostnames geo-blocked. Set BINANCE_HOSTNAME env var to a working hostname.")
+            raise last_error
 
         market = self.exchange.market(self.config.symbol)
         self.tick_size = float(market.get("precision", {}).get("price", 0.10))
