@@ -17,7 +17,15 @@ def setup_logging(config: BotConfig) -> logging.Logger:
     logger.setLevel(getattr(logging, config.log_level.upper(), logging.INFO))
 
     # Console handler with colored output
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Force UTF-8 on Windows to avoid cp1252 encoding errors with box chars
+    if sys.platform == "win32":
+        import io
+        stdout_stream = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+        )
+    else:
+        stdout_stream = sys.stdout
+    console_handler = logging.StreamHandler(stdout_stream)
     console_handler.setLevel(logging.INFO)
     console_fmt = logging.Formatter(
         "%(asctime)s │ %(levelname)-7s │ %(message)s",

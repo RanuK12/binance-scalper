@@ -78,6 +78,12 @@ def api_state():
     return json.dumps(state), 200, {"Content-Type": "application/json"}
 
 
+@app.route("/health")
+def health():
+    """Health check endpoint for Render/Railway."""
+    return "OK", 200
+
+
 def run_dashboard(port: int):
     """Run the Flask dashboard in a background thread."""
     socketio.run(app, host="0.0.0.0", port=port, allow_unsafe_werkzeug=True, log_output=False)
