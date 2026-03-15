@@ -115,6 +115,20 @@ DASHBOARD_HTML = r"""
         .chart-canvas { width: 100%; height: 100%; }
         .chart-labels { position: absolute; top: 4px; right: 8px; font-size: 0.7em; color: var(--text3); font-family: monospace; }
 
+        /* Market Analysis */
+        .analysis-card { background: var(--bg4); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+        .analysis-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .analysis-bias { padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 0.8em; letter-spacing: 0.5px; }
+        .bias-bullish { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+        .bias-bearish { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); }
+        .bias-neutral { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow); }
+        .analysis-summary { font-size: 0.95em; color: var(--text); line-height: 1.5; margin-bottom: 10px; font-weight: 500; }
+        .analysis-conditions { list-style: none; padding: 0; }
+        .analysis-conditions li { font-size: 0.8em; color: var(--text2); padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.02); display: flex; align-items: flex-start; gap: 6px; line-height: 1.4; }
+        .analysis-conditions li:last-child { border-bottom: none; }
+        .cond-dot { width: 5px; height: 5px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+        .analysis-time { font-size: 0.65em; color: var(--text3); font-family: monospace; }
+
         /* Colors */
         .green { color: var(--green); } .red { color: var(--red); } .yellow { color: var(--yellow); } .blue { color: var(--blue); } .purple { color: var(--purple); }
 
@@ -181,6 +195,19 @@ DASHBOARD_HTML = r"""
 
         <!-- Position (dynamic) -->
         <div id="positionSection"></div>
+
+        <!-- Market Analysis -->
+        <div class="analysis-card" id="analysisSection">
+            <div class="analysis-header">
+                <div class="section-title" style="margin-bottom:0;"><span class="dot" style="background:var(--blue)"></span> Analisis de Mercado</div>
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span class="analysis-bias bias-neutral" id="analysisBias">NEUTRAL</span>
+                    <span class="analysis-time" id="analysisTime">-</span>
+                </div>
+            </div>
+            <div class="analysis-summary" id="analysisSummary">Esperando datos del mercado...</div>
+            <ul class="analysis-conditions" id="analysisConditions"></ul>
+        </div>
 
         <!-- Two Column: Scoring + Equity Chart -->
         <div class="two-col">
@@ -559,6 +586,31 @@ DASHBOARD_HTML = r"""
             }
             tbody.innerHTML = rows;
         }
+
+        // ─── Market Analysis ───
+        let analysis = s.market_analysis || {};
+        document.getElementById('analysisSummary').textContent = analysis.summary || 'Esperando datos...';
+
+        let biasEl = document.getElementById('analysisBias');
+        let bias = analysis.bias || 'neutral';
+        let biasLabels = {bullish: 'ALCISTA', bearish: 'BAJISTA', neutral: 'NEUTRAL'};
+        biasEl.textContent = (biasLabels[bias] || 'NEUTRAL') + (analysis.bias_score ? ' (' + (analysis.bias_score > 0 ? '+' : '') + analysis.bias_score + ')' : '');
+        biasEl.className = 'analysis-bias bias-' + bias;
+
+        if (analysis.timestamp) {
+            document.getElementById('analysisTime').textContent = fmtTime(analysis.timestamp);
+        }
+
+        let condList = analysis.conditions || [];
+        let condHtml = '';
+        for (let c of condList) {
+            let dotColor = 'var(--text3)';
+            if (c.includes('alcista') || c.includes('comprador') || c.includes('rebote') || c.includes('soporte') || c.includes('LONG') || c.includes('bid')) dotColor = 'var(--green)';
+            else if (c.includes('bajista') || c.includes('vendedor') || c.includes('correccion') || c.includes('presion') || c.includes('SHORT') || c.includes('ask')) dotColor = 'var(--red)';
+            else if (c.includes('squeeze') || c.includes('explosion') || c.includes('agotamiento') || c.includes('choppy') || c.includes('cuidado')) dotColor = 'var(--yellow)';
+            condHtml += '<li><span class="cond-dot" style="background:' + dotColor + '"></span>' + c + '</li>';
+        }
+        document.getElementById('analysisConditions').innerHTML = condHtml;
 
         // ─── Equity Chart ───
         drawEquityChart(s.equity_history || []);
