@@ -571,7 +571,12 @@ class ScalpingStrategy:
         threshold_long = max(cfg.score_threshold_long, 4.0)
         threshold_short = max(cfg.score_threshold_short, 4.0)
 
-        if long_score >= threshold_long and long_score > short_score:
+        # v4.0: Require minimum score GAP — avoid ambiguous signals
+        # If both sides are close, the signal is not clear enough
+        score_gap = abs(long_score - short_score)
+        min_gap = 1.5  # need at least 1.5 pts difference
+
+        if long_score >= threshold_long and long_score > short_score and score_gap >= min_gap:
             self.last_had_crossover = has_long_crossover
             self.last_htf_aligned = htf_bullish
             lev = self._compute_dynamic_leverage(long_score, indicators, Side.LONG)
@@ -583,7 +588,7 @@ class ScalpingStrategy:
             )
             return Signal(side=Side.LONG, score=long_score, indicators=indicators, recommended_leverage=lev)
 
-        if short_score >= threshold_short and short_score > long_score:
+        if short_score >= threshold_short and short_score > long_score and score_gap >= min_gap:
             self.last_had_crossover = has_short_crossover
             self.last_htf_aligned = not htf_bullish
             lev = self._compute_dynamic_leverage(short_score, indicators, Side.SHORT)
@@ -598,6 +603,7 @@ class ScalpingStrategy:
         logger.debug(
             f"No signal | Long: {long_score:.1f}/{threshold_long:.1f} | "
             f"Short: {short_score:.1f}/{threshold_short:.1f} | "
+            f"Gap: {score_gap:.1f}/{min_gap:.1f} | "
             f"Price: ${indicators.close_price:,.2f} | RSI: {indicators.rsi:.0f} | "
             f"MACD: {indicators.macd_histogram:+.2f}"
         )

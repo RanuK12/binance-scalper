@@ -600,7 +600,7 @@ DASHBOARD_HTML = r"""
                 let t = trades[i];
                 let pnlC = t.pnl >= 0 ? 'green' : 'red';
                 let sideC = t.side === 'LONG' ? 'green' : 'red';
-                let reasonMap = {tp:'TP', sl:'SL', trailing:'TRAIL', shutdown:'SHUT', daily_limit:'DLMT', manual:'MAN'};
+                let reasonMap = {tp:'TP', sl:'SL', trailing:'TRAIL', timeout:'TIME', shutdown:'SHUT', daily_limit:'DLMT', manual:'MAN'};
                 rows += '<tr>' +
                     '<td>' + fmtTime(t.time) + '</td>' +
                     '<td class="' + sideC + '">' + t.side + '</td>' +

@@ -95,6 +95,7 @@ class PositionManager:
             take_profit=tp,
             highest_price=fill_price,
             lowest_price=fill_price,
+            atr_pct=atr_pct,
         )
         self._last_signal_score = signal.score
 
@@ -141,6 +142,18 @@ class PositionManager:
         if pos.side == Side.SHORT and current_price <= pos.take_profit:
             return await self._close_position(current_price, "tp")
 
+        # --- TIME-BASED EXIT (v4.0) ---
+        # Scalping positions older than 10 minutes are likely bad entries
+        age_sec = time.time() - pos.entry_time
+        if age_sec > 600:  # 10 minutes
+            pnl_pct = pos.pnl_unrealized / ((pos.quantity * pos.entry_price) / pos.leverage) if pos.quantity > 0 else 0
+            if pnl_pct < 0.005:  # less than 0.5% margin profit after 10 min
+                logger.info(
+                    f"TIME EXIT: Position age {age_sec:.0f}s > 600s with "
+                    f"marginal PnL ({pnl_pct*100:.2f}%)"
+                )
+                return await self._close_position(current_price, "timeout")
+
         # --- TRAILING STOP ---
         if self.config.trailing_stop_enabled:
             triggered = self._update_trailing_stop(current_price)
@@ -150,68 +163,71 @@ class PositionManager:
         return None
 
     def _update_trailing_stop(self, price: float) -> bool:
-        """Update trailing stop and return True if triggered."""
+        """
+        Update trailing stop and return True if triggered.
+        v4.0: Uses ATR-based distances instead of fixed percentages.
+        Activation: 1.5x ATR profit, Callback: 1.0x ATR distance.
+        Falls back to config percentages if ATR not available.
+        """
         pos = self.position
         if pos is None:
             return False
 
-        cfg = self.config
+        # v4.0: ATR-based trailing distances (adapt to volatility)
+        if pos.atr_pct > 0:
+            activation_pct = max(pos.atr_pct * 1.5, 0.003)  # min 0.3%
+            callback_pct = max(pos.atr_pct * 1.0, 0.002)    # min 0.2%
+        else:
+            activation_pct = self.config.trailing_stop_activation_pct
+            callback_pct = self.config.trailing_stop_callback_pct
 
         if pos.side == Side.LONG:
-            # Track highest price
             if price > pos.highest_price:
                 pos.highest_price = price
 
-            # Check if trailing should activate
             profit_pct = (price - pos.entry_price) / pos.entry_price
-            if not pos.trailing_stop_active and profit_pct >= cfg.trailing_stop_activation_pct:
+            if not pos.trailing_stop_active and profit_pct >= activation_pct:
                 pos.trailing_stop_active = True
-                pos.trailing_stop_price = price * (1 - cfg.trailing_stop_callback_pct)
+                pos.trailing_stop_price = price * (1 - callback_pct)
                 logger.info(
-                    f"🔒 Trailing stop ACTIVATED at ${pos.trailing_stop_price:,.2f} "
-                    f"(profit: {profit_pct * 100:.2f}%)"
+                    f"Trailing ACTIVATED at ${pos.trailing_stop_price:,.2f} "
+                    f"(profit: {profit_pct*100:.2f}%, activation: {activation_pct*100:.2f}%)"
                 )
 
             if pos.trailing_stop_active:
-                # Move trailing stop up
-                new_trail = pos.highest_price * (1 - cfg.trailing_stop_callback_pct)
+                new_trail = pos.highest_price * (1 - callback_pct)
                 if new_trail > (pos.trailing_stop_price or 0):
                     pos.trailing_stop_price = new_trail
 
-                # Check if triggered
                 if price <= pos.trailing_stop_price:
                     logger.info(
-                        f"🔒 Trailing stop TRIGGERED at ${price:,.2f} "
-                        f"(trail was ${pos.trailing_stop_price:,.2f})"
+                        f"Trailing TRIGGERED at ${price:,.2f} "
+                        f"(trail: ${pos.trailing_stop_price:,.2f})"
                     )
                     return True
 
         elif pos.side == Side.SHORT:
-            # Track lowest price
             if price < pos.lowest_price:
                 pos.lowest_price = price
 
-            # Check if trailing should activate
             profit_pct = (pos.entry_price - price) / pos.entry_price
-            if not pos.trailing_stop_active and profit_pct >= cfg.trailing_stop_activation_pct:
+            if not pos.trailing_stop_active and profit_pct >= activation_pct:
                 pos.trailing_stop_active = True
-                pos.trailing_stop_price = price * (1 + cfg.trailing_stop_callback_pct)
+                pos.trailing_stop_price = price * (1 + callback_pct)
                 logger.info(
-                    f"🔒 Trailing stop ACTIVATED at ${pos.trailing_stop_price:,.2f} "
-                    f"(profit: {profit_pct * 100:.2f}%)"
+                    f"Trailing ACTIVATED at ${pos.trailing_stop_price:,.2f} "
+                    f"(profit: {profit_pct*100:.2f}%, activation: {activation_pct*100:.2f}%)"
                 )
 
             if pos.trailing_stop_active:
-                # Move trailing stop down
-                new_trail = pos.lowest_price * (1 + cfg.trailing_stop_callback_pct)
+                new_trail = pos.lowest_price * (1 + callback_pct)
                 if new_trail < (pos.trailing_stop_price or 999_999_999):
                     pos.trailing_stop_price = new_trail
 
-                # Check if triggered
                 if price >= pos.trailing_stop_price:
                     logger.info(
-                        f"🔒 Trailing stop TRIGGERED at ${price:,.2f} "
-                        f"(trail was ${pos.trailing_stop_price:,.2f})"
+                        f"Trailing TRIGGERED at ${price:,.2f} "
+                        f"(trail: ${pos.trailing_stop_price:,.2f})"
                     )
                     return True
 
@@ -273,12 +289,13 @@ class PositionManager:
 
         # Log result
         reason_labels = {
-            "sl": "⛔ STOP LOSS",
-            "tp": "✅ TAKE PROFIT",
-            "trailing": "🔒 TRAILING STOP",
-            "shutdown": "🔌 SHUTDOWN",
-            "daily_limit": "🚫 DAILY LIMIT",
-            "manual": "👤 MANUAL",
+            "sl": "STOP LOSS",
+            "tp": "TAKE PROFIT",
+            "trailing": "TRAILING STOP",
+            "timeout": "TIME EXIT",
+            "shutdown": "SHUTDOWN",
+            "daily_limit": "DAILY LIMIT",
+            "manual": "MANUAL",
         }
         label = reason_labels.get(reason, reason.upper())
         pnl_str = f"+${pnl:.4f}" if pnl >= 0 else f"-${abs(pnl):.4f}"

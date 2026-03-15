@@ -62,8 +62,29 @@ class RiskManager:
         return True, "ok"
 
     def compute_position_size(self, balance: float) -> float:
-        """Compute the margin to use for a new position."""
-        margin = balance * self.config.max_position_pct
+        """
+        Compute the margin to use for a new position.
+        v4.0: Progressive sizing — reduce after consecutive losses.
+        - 0 consecutive losses: 100% of balance
+        - 1 loss: 80%
+        - 2 losses: 60%
+        - 3 losses: 40%
+        - 4+ losses: cooldown kicks in
+        """
+        base_pct = self.config.max_position_pct
+
+        # Reduce position size proportionally to consecutive losses
+        if self.consecutive_losses > 0:
+            reduction = 0.2 * self.consecutive_losses  # 20% per loss
+            size_multiplier = max(0.4, 1.0 - reduction)
+            margin = balance * base_pct * size_multiplier
+            logger.info(
+                f"Progressive sizing: {size_multiplier*100:.0f}% "
+                f"({self.consecutive_losses} consecutive losses)"
+            )
+        else:
+            margin = balance * base_pct
+
         return margin
 
     def compute_stop_take(self, entry_price: float, side: Side, atr_pct: float = 0.0) -> tuple[float, float]:
