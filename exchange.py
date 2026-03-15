@@ -10,6 +10,7 @@ import pandas as pd
 
 from config import BotConfig
 from models import Side
+from proxy_finder import find_working_proxy
 from utils import retry_async, round_quantity, round_price
 
 logger = logging.getLogger("scalper")
@@ -84,13 +85,17 @@ class ExchangeClient:
         Retries with alternative hostnames on geo-block (451),
         and retries the entire sequence on timeout with exponential backoff.
 
-        Supports proxy via HTTPS_PROXY / SOCKS_PROXY env vars.
+        If all hostnames are geo-blocked and no proxy is set,
+        auto-discovers a free proxy and retries.
         """
         logger.info("Initializing exchange connection...")
 
         # Use shorter timeout for probing, then restore for trading
         original_timeout = self.exchange.timeout
         self.exchange.timeout = 15000  # 15s for init probes
+
+        # Track if geo-blocked (vs timeout) to trigger auto-proxy
+        geo_blocked = False
 
         # Try default hostname first, then alternatives if geo-blocked
         hostnames_to_try = _BINANCE_HOSTNAMES.copy()
@@ -121,6 +126,7 @@ class ExchangeClient:
                 except ccxt.ExchangeNotAvailable as e:
                     last_error = e
                     if "451" in str(e):
+                        geo_blocked = True
                         logger.warning(f"Geo-blocked{' on ' + hostname if hostname else ''}")
                         continue  # Try next hostname
                     else:
@@ -138,6 +144,22 @@ class ExchangeClient:
 
             if connected:
                 break
+
+            # All hostnames failed — if geo-blocked, try auto-proxy before giving up
+            if geo_blocked and attempt == 1 and not self.exchange.httpsProxy and not self.exchange.socksProxy:
+                logger.info("All hostnames geo-blocked. Trying auto-proxy discovery...")
+                proxy = await find_working_proxy()
+                if proxy:
+                    logger.info(f"Auto-proxy found: {proxy}. Retrying with proxy...")
+                    if proxy.startswith("socks"):
+                        self.exchange.socksProxy = proxy
+                    else:
+                        self.exchange.httpsProxy = proxy
+                    # Reset hostname to default and retry all
+                    self.exchange.hostname = None
+                    hostnames_to_try = _BINANCE_HOSTNAMES.copy()
+                    geo_blocked = False
+                    continue  # Retry with proxy
 
             # All hostnames failed this attempt — retry with backoff
             if attempt < max_retries:
