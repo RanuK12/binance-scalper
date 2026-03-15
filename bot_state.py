@@ -86,6 +86,7 @@ def build_state(
     last_scores: tuple[float, float],
     status: str = "Esperando senal...",
     score_breakdown: dict | None = None,
+    market_analysis: dict | None = None,
 ) -> dict:
     """Build the full state dict for the dashboard."""
     pos_info = position_manager.get_position_info()
@@ -136,5 +137,6 @@ def build_state(
         "uptime": uptime_sec,
         "trade_history": _trade_history[-20:],  # last 20 for dashboard
         "equity_history": _equity_history[-100:],  # last 100 for chart
+        "market_analysis": market_analysis or {},
     }
     return state

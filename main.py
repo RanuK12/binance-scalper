@@ -30,6 +30,7 @@ from bot_state import (
 )
 from config import load_config, BotConfig
 from dashboard import DASHBOARD_HTML
+from market_analysis import generate_market_analysis
 from data_feed import DataFeed
 from exchange import ExchangeClient
 from logger_setup import setup_logging
@@ -355,6 +356,7 @@ async def main():
     last_indicators_dict = {}
     last_score_breakdown = {}
     last_indicators_obj = None
+    last_analysis = {}
     _processing_signal = False
     _equity_snapshot_counter = 0
 
@@ -389,7 +391,7 @@ async def main():
                 state = build_state(
                     config, free_bal, equity, position_manager, risk_manager,
                     data_feed.get_last_price(), last_indicators_dict, last_scores,
-                    status, last_score_breakdown,
+                    status, last_score_breakdown, last_analysis,
                 )
                 update_shared_state(state)
                 emit_state_update(state)
@@ -434,6 +436,9 @@ async def main():
                     else:
                         last_scores = (last_scores[0], signal_result.score)
 
+                # Generate market analysis
+                last_analysis = generate_market_analysis(last_indicators_dict, last_scores, config)
+
                 # Equity snapshot on each candle
                 free_bal, equity = await compute_equity(exchange, position_manager)
                 add_equity_snapshot(equity)
@@ -453,7 +458,7 @@ async def main():
                 state = build_state(
                     config, free_bal, equity, position_manager, risk_manager,
                     price, last_indicators_dict, last_scores, status,
-                    last_score_breakdown,
+                    last_score_breakdown, last_analysis,
                 )
                 update_shared_state(state)
                 emit_state_update(state)
@@ -468,7 +473,7 @@ async def main():
                             config, free_bal, equity, position_manager, risk_manager,
                             price, last_indicators_dict, last_scores,
                             f"Posicion {signal_result.side.value.upper()} abierta | Lev: {signal_result.recommended_leverage}x",
-                            last_score_breakdown,
+                            last_score_breakdown, last_analysis,
                         )
                         update_shared_state(state)
                         emit_state_update(state)
