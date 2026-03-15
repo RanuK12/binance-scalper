@@ -88,6 +88,7 @@ def build_state(
     score_breakdown: dict | None = None,
     market_analysis: dict | None = None,
     learner_stats: dict | None = None,
+    current_leverage: int | None = None,
 ) -> dict:
     """Build the full state dict for the dashboard."""
     pos_info = position_manager.get_position_info()
@@ -112,7 +113,7 @@ def build_state(
         "equity": equity,
         "price": last_price,
         "symbol": config.symbol,
-        "leverage": config.leverage,
+        "leverage": current_leverage or config.leverage,
         "max_leverage": config.max_leverage,
         "sl_pct": config.stop_loss_pct * 100,
         "tp_pct": config.take_profit_pct * 100,
