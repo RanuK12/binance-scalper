@@ -36,6 +36,7 @@ class ExchangeClient:
             "apiKey": config.api_key,
             "secret": config.api_secret,
             "enableRateLimit": True,
+            "timeout": 30000,  # 30s timeout (default 10s too short for Railway)
             "options": {
                 "defaultType": "future",
                 "fetchCurrencies": False,  # Skip spot API call that gets geo-blocked
@@ -60,9 +61,10 @@ class ExchangeClient:
         self._dry_balance: float = 10.0
         self._dry_position: dict | None = None
 
-    async def initialize(self) -> None:
+    async def initialize(self, max_retries: int = 5) -> None:
         """Load markets and configure leverage/margin type.
-        Retries with alternative Binance hostnames if geo-blocked (451).
+        Retries with alternative hostnames on geo-block (451),
+        and retries the entire sequence on timeout with exponential backoff.
         """
         logger.info("Initializing exchange connection...")
 
@@ -74,38 +76,52 @@ class ExchangeClient:
             hostnames_to_try = [current_hostname]
 
         last_error = None
-        for hostname in hostnames_to_try:
-            try:
-                if hostname and hostname != current_hostname:
-                    logger.info(f"Trying Binance hostname: {hostname}")
-                    self.exchange.hostname = hostname
-                    # Reset markets cache to force reload
-                    self.exchange.markets = None
-                    self.exchange.markets_by_id = None
+        for attempt in range(1, max_retries + 1):
+            connected = False
+            for hostname in hostnames_to_try:
+                try:
+                    if hostname and hostname != current_hostname:
+                        logger.info(f"Trying Binance hostname: {hostname}")
+                        self.exchange.hostname = hostname
+                        # Reset markets cache to force reload
+                        self.exchange.markets = None
+                        self.exchange.markets_by_id = None
 
-                await self.exchange.load_markets()
-                if hostname:
-                    logger.info(f"Connected successfully via {hostname}")
-                break  # Success
-            except ccxt.ExchangeNotAvailable as e:
-                last_error = e
-                if "451" in str(e):
-                    logger.warning(f"Geo-blocked{' on ' + hostname if hostname else ''}: {e}")
-                    # Try next hostname
+                    await self.exchange.load_markets()
+                    if hostname:
+                        logger.info(f"Connected successfully via {hostname}")
+                    connected = True
+                    break  # Success
+                except ccxt.ExchangeNotAvailable as e:
+                    last_error = e
+                    if "451" in str(e):
+                        logger.warning(f"Geo-blocked{' on ' + hostname if hostname else ''}: {e}")
+                        continue  # Try next hostname
+                    else:
+                        raise  # Non-geo-block error, don't retry
+                except (ccxt.RequestTimeout, ccxt.NetworkError, Exception) as e:
+                    last_error = e
+                    logger.warning(f"Connection failed{' on ' + hostname if hostname else ''}: {e}")
+                    await asyncio.sleep(1)
                     continue
-                else:
-                    raise  # Non-geo-block error, don't retry
-            except Exception as e:
-                last_error = e
-                logger.warning(f"Connection failed{' on ' + hostname if hostname else ''}: {e}")
-                if hostname == hostnames_to_try[-1]:
-                    raise
-                await asyncio.sleep(2)
-                continue
-        else:
-            # All hostnames exhausted
-            logger.error("All Binance hostnames geo-blocked. Set BINANCE_HOSTNAME env var to a working hostname.")
-            raise last_error
+
+            if connected:
+                break
+
+            # All hostnames failed this attempt — retry with backoff
+            if attempt < max_retries:
+                wait = min(10, 2 ** attempt)
+                logger.warning(
+                    f"All hostnames failed (attempt {attempt}/{max_retries}). "
+                    f"Retrying in {wait}s..."
+                )
+                await asyncio.sleep(wait)
+            else:
+                logger.error(
+                    f"Failed to connect after {max_retries} attempts. "
+                    f"Set BINANCE_HOSTNAME env var or check network."
+                )
+                raise last_error
 
         market = self.exchange.market(self.config.symbol)
         self.tick_size = float(market.get("precision", {}).get("price", 0.10))
