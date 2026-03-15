@@ -1,10 +1,17 @@
 """
-Strategy v3.0 — Multi-indicator scoring with dynamic leverage.
-===============================================================
+Strategy v4.0 — Multi-indicator scoring with self-learning integration.
+=======================================================================
 Full analytical brain: EMA crossover, RSI + divergence, MACD momentum,
 Bollinger Bands squeeze, ATR dynamic SL/TP, VWAP, volume delta,
 order book imbalance, higher timeframe trend, exhaustion filter,
 anti-chop regime detection. Dynamic leverage 15x-45x based on confluence.
+
+v4.0 changes:
+- Higher base threshold (4.0 vs 3.0) — need more confluence
+- Strong signal tracking (crossovers/divergences)
+- Volume scoring is directional only (no longer adds to both sides)
+- Learner integration for adaptive thresholds and leverage
+- Stricter anti-chop and volume filters
 """
 
 import logging
@@ -21,7 +28,7 @@ logger = logging.getLogger("scalper")
 
 
 class ScalpingStrategy:
-    """v3.0 aggressive scalping strategy with dynamic leverage."""
+    """v4.0 strategy with self-learning integration."""
 
     def __init__(self, config: BotConfig):
         self.config = config
@@ -29,6 +36,9 @@ class ScalpingStrategy:
         self._rsi_history: list[float] = []
         self._price_history: list[float] = []
         self._max_history = 30
+        # Track whether the last signal had a strong entry trigger
+        self.last_had_crossover: bool = False
+        self.last_htf_aligned: bool = False
 
     def compute_indicators(self, df: pd.DataFrame, ob: OrderBookSnapshot) -> Optional[IndicatorSnapshot]:
         """Compute all technical indicators from candle data."""
@@ -187,16 +197,34 @@ class ScalpingStrategy:
         """
         Detect choppy/ranging market where signals are unreliable.
         Uses BB width squeeze + low volume + RSI near 50.
+        v4.0: stricter detection — catches more chop conditions.
         """
+        chop_score = 0
+
         # Tight BB = low volatility = chop
         if indicators.bb_width < 0.002:
-            return True
+            chop_score += 2
+        elif indicators.bb_width < 0.004:
+            chop_score += 1
 
-        # RSI stuck in 45-55 range with low volume = no direction
-        if 45 < indicators.rsi < 55 and indicators.volume_ratio < 0.6:
-            return True
+        # RSI near 50 = no momentum
+        if 42 < indicators.rsi < 58:
+            chop_score += 1
 
-        return False
+        # Low volume = no interest
+        if indicators.volume_ratio < 0.7:
+            chop_score += 1
+
+        # Low ATR = compressed market
+        if indicators.atr_pct < 0.0008:
+            chop_score += 1
+
+        # MACD histogram near zero = no momentum
+        if abs(indicators.macd_histogram) < 5:
+            chop_score += 1
+
+        # 3+ chop signals = choppy
+        return chop_score >= 3
 
     def _compute_dynamic_leverage(self, score: float, indicators: IndicatorSnapshot, side: Side) -> int:
         """
@@ -320,10 +348,10 @@ class ScalpingStrategy:
             return None
 
         # ═══════════════════════════════════════════
-        # VOLUME FILTER — skip if dead market
+        # VOLUME FILTER — skip if dead market (v4.0: stricter)
         # ═══════════════════════════════════════════
-        if indicators.volume_ratio < 0.5:
-            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x). Skipping.")
+        if indicators.volume_ratio < 0.7:
+            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x < 0.7x). Skipping.")
             self._prev_indicators = indicators
             return None
 
@@ -411,29 +439,22 @@ class ScalpingStrategy:
             reasons_short.append(f"MACD momentum +{bonus:.1f}")
 
         # ═══════════════════════════════════════════
-        # 5. VOLUME (weight: 1.0)
+        # 5. VOLUME (weight: 1.0) — v4.0: DIRECTIONAL ONLY
+        # Volume only counts toward the side the delta supports.
+        # No more adding to both sides — that caused false signals.
         # ═══════════════════════════════════════════
-        if indicators.volume_ratio > 2.0:
-            long_score += cfg.w_volume
-            short_score += cfg.w_volume
-            reasons_long.append(f"Vol spike({indicators.volume_ratio:.1f}x) +{cfg.w_volume}")
-            reasons_short.append(f"Vol spike({indicators.volume_ratio:.1f}x) +{cfg.w_volume}")
-        elif indicators.volume_ratio > 1.3:
-            bonus = cfg.w_volume * 0.5
-            long_score += bonus
-            short_score += bonus
-            reasons_long.append(f"Vol above avg({indicators.volume_ratio:.1f}x) +{bonus:.1f}")
-            reasons_short.append(f"Vol above avg({indicators.volume_ratio:.1f}x) +{bonus:.1f}")
+        if indicators.volume_ratio > 1.3:
+            vol_base = cfg.w_volume if indicators.volume_ratio > 2.0 else cfg.w_volume * 0.5
 
-        # Volume delta direction
-        if indicators.volume_delta > 0.25:
-            bonus = cfg.w_volume * 0.4
-            long_score += bonus
-            reasons_long.append(f"Vol delta buy +{bonus:.1f}")
-        elif indicators.volume_delta < -0.25:
-            bonus = cfg.w_volume * 0.4
-            short_score += bonus
-            reasons_short.append(f"Vol delta sell +{bonus:.1f}")
+            if indicators.volume_delta > 0.15:
+                # Buy-side volume — only helps LONG
+                long_score += vol_base
+                reasons_long.append(f"Vol buy({indicators.volume_ratio:.1f}x, delta:{indicators.volume_delta:+.0%}) +{vol_base:.1f}")
+            elif indicators.volume_delta < -0.15:
+                # Sell-side volume — only helps SHORT
+                short_score += vol_base
+                reasons_short.append(f"Vol sell({indicators.volume_ratio:.1f}x, delta:{indicators.volume_delta:+.0%}) +{vol_base:.1f}")
+            # If volume is high but delta is neutral, don't add to either side
 
         # ═══════════════════════════════════════════
         # 6. BOLLINGER BANDS + SQUEEZE (weight: 1.5)
@@ -533,28 +554,50 @@ class ScalpingStrategy:
         self._prev_indicators = indicators
 
         # ═══════════════════════════════════════════
-        # DECISION + DYNAMIC LEVERAGE
+        # STRONG SIGNAL TRACKING (v4.0)
+        # A "strong signal" = an actual crossover or divergence occurred,
+        # not just weak alignment bonuses.
         # ═══════════════════════════════════════════
-        if long_score >= cfg.score_threshold_long and long_score > short_score:
+        has_long_crossover = any("CROSS UP" in r for r in reasons_long) or any("BULL DIV" in r for r in reasons_long)
+        has_short_crossover = any("CROSS DOWN" in r for r in reasons_short) or any("BEAR DIV" in r for r in reasons_short)
+
+        # HTF trend alignment tracking
+        htf_bullish = indicators.htf_ema_fast > indicators.htf_ema_slow
+
+        # ═══════════════════════════════════════════
+        # DECISION + DYNAMIC LEVERAGE (v4.0: higher bar)
+        # ═══════════════════════════════════════════
+        # v4.0: Use 4.0 as base threshold instead of 3.0
+        threshold_long = max(cfg.score_threshold_long, 4.0)
+        threshold_short = max(cfg.score_threshold_short, 4.0)
+
+        if long_score >= threshold_long and long_score > short_score:
+            self.last_had_crossover = has_long_crossover
+            self.last_htf_aligned = htf_bullish
             lev = self._compute_dynamic_leverage(long_score, indicators, Side.LONG)
             logger.info(
-                f"LONG signal (score: {long_score:.1f}/{cfg.score_threshold_long:.1f}, lev: {lev}x) | "
+                f"LONG signal (score: {long_score:.1f}/{threshold_long:.1f}, lev: {lev}x, "
+                f"strong: {has_long_crossover}) | "
                 f"Price: ${indicators.close_price:,.2f} | "
                 f"{' | '.join(reasons_long)}"
             )
             return Signal(side=Side.LONG, score=long_score, indicators=indicators, recommended_leverage=lev)
 
-        if short_score >= cfg.score_threshold_short and short_score > long_score:
+        if short_score >= threshold_short and short_score > long_score:
+            self.last_had_crossover = has_short_crossover
+            self.last_htf_aligned = not htf_bullish
             lev = self._compute_dynamic_leverage(short_score, indicators, Side.SHORT)
             logger.info(
-                f"SHORT signal (score: {short_score:.1f}/{cfg.score_threshold_short:.1f}, lev: {lev}x) | "
+                f"SHORT signal (score: {short_score:.1f}/{threshold_short:.1f}, lev: {lev}x, "
+                f"strong: {has_short_crossover}) | "
                 f"Price: ${indicators.close_price:,.2f} | "
                 f"{' | '.join(reasons_short)}"
             )
             return Signal(side=Side.SHORT, score=short_score, indicators=indicators, recommended_leverage=lev)
 
         logger.debug(
-            f"No signal | Long: {long_score:.1f} | Short: {short_score:.1f} | "
+            f"No signal | Long: {long_score:.1f}/{threshold_long:.1f} | "
+            f"Short: {short_score:.1f}/{threshold_short:.1f} | "
             f"Price: ${indicators.close_price:,.2f} | RSI: {indicators.rsi:.0f} | "
             f"MACD: {indicators.macd_histogram:+.2f}"
         )
