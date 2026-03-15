@@ -96,6 +96,7 @@ async def position_monitor_loop(
     data_feed: DataFeed,
 ):
     """Monitor position on every price tick (runs every 200ms)."""
+    verify_counter = 0
     while True:
         try:
             price = data_feed.get_last_price()
@@ -104,6 +105,12 @@ async def position_monitor_loop(
                 if trade:
                     add_trade_to_history(trade)
                     logger.info(f"Position closed by monitor loop: {trade.exit_reason}")
+
+                # Verify position exists on Binance every ~30 seconds
+                verify_counter += 1
+                if verify_counter >= 150:  # 150 * 0.2s = 30s
+                    verify_counter = 0
+                    await position_manager.verify_position_exists()
         except Exception as e:
             logger.error(f"Position monitor error: {e}")
 
