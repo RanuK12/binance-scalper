@@ -406,6 +406,7 @@ async def main():
     last_analysis = {}
     _processing_signal = False
     _equity_snapshot_counter = 0
+    _last_trade_time = time.time()  # Track idle time for threshold escalation
 
     try:
         while not shutdown_event.is_set():
@@ -520,23 +521,23 @@ async def main():
                     skip = False
                     skip_reason = ""
 
-                    # ─── FILTER 1: Learner adaptive threshold (BUG FIX) ───
+                    # ─── FILTER 1: Adaptive threshold with idle escalation ───
                     effective_threshold = learner.get_effective_threshold(config.score_threshold_long)
+                    # v4.2: If idle too long, lower threshold to find trades
+                    idle_minutes = (time.time() - _last_trade_time) / 60
+                    if idle_minutes > 20:
+                        # Reduce threshold by 0.1 per 10min idle, max -0.5
+                        idle_reduction = min(0.5, 0.1 * ((idle_minutes - 20) / 10))
+                        effective_threshold = max(2.5, effective_threshold - idle_reduction)
+                        if idle_reduction > 0.05:
+                            logger.info(f"Idle {idle_minutes:.0f}min → threshold reduced to {effective_threshold:.1f}")
                     if signal_result.score < effective_threshold:
                         skip = True
-                        skip_reason = f"Score {signal_result.score:.1f} < learner threshold {effective_threshold:.1f}"
+                        skip_reason = f"Score {signal_result.score:.1f} < threshold {effective_threshold:.1f}"
 
-                    # ─── FILTER 2: Mandatory HTF alignment ───
-                    # NEVER trade against the macro trend. Period.
-                    if not skip:
-                        htf_f = last_indicators_dict.get("htf_ema_fast", 0)
-                        htf_s = last_indicators_dict.get("htf_ema_slow", 0)
-                        if htf_f > 0 and htf_s > 0:
-                            htf_bullish = htf_f > htf_s
-                            is_long = signal_result.side == Side.LONG
-                            if (is_long and not htf_bullish) or (not is_long and htf_bullish):
-                                skip = True
-                                skip_reason = f"Against HTF trend ({'BULL' if htf_bullish else 'BEAR'})"
+                    # ─── FILTER 2: HTF alignment ───
+                    # v4.2: Removed hard block. HTF is already penalized in scoring.
+                    # Double-filtering killed too many valid counter-trend scalps.
 
                     # ─── FILTER 3: Fee-aware minimum TP check ───
                     # Binance taker fee: 0.04% × 2 sides = 0.08% of notional
@@ -592,6 +593,7 @@ async def main():
 
                         opened = await position_manager.open_position(signal_result, price)
                         if opened:
+                            _last_trade_time = time.time()
                             free_bal, equity = await compute_equity(exchange, position_manager)
                             state = build_state(
                                 config, free_bal, equity, position_manager, risk_manager,
