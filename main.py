@@ -434,6 +434,7 @@ async def main():
                     data_feed.get_last_price(), last_indicators_dict, last_scores,
                     status, last_score_breakdown, last_analysis,
                     learner_stats=learner.get_stats(),
+                    current_leverage=exchange._current_leverage,
                 )
                 update_shared_state(state)
                 emit_state_update(state)
@@ -503,6 +504,7 @@ async def main():
                     price, last_indicators_dict, last_scores, status,
                     last_score_breakdown, last_analysis,
                     learner_stats=learner.get_stats(),
+                    current_leverage=exchange._current_leverage,
                 )
                 update_shared_state(state)
                 emit_state_update(state)
@@ -591,6 +593,7 @@ async def main():
                                 f"Posicion {signal_result.side.value.upper()} abierta | Lev: {adjusted_lev}x",
                                 last_score_breakdown, last_analysis,
                                 learner_stats=learner.get_stats(),
+                                current_leverage=exchange._current_leverage,
                             )
                             update_shared_state(state)
                             emit_state_update(state)
