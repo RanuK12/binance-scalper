@@ -491,22 +491,68 @@ async def main():
                 update_shared_state(state)
                 emit_state_update(state)
 
-                # If no position and we have a signal, apply learner filters then open
+                # If no position and we have a signal, apply ALL filters then open
                 if position_manager.position is None and signal_result is not None:
-                    # ─── Learner filters ───
-                    skip, skip_reason = learner.should_skip_trade(
-                        last_indicators_dict, strategy.last_had_crossover
-                    )
+                    skip = False
+                    skip_reason = ""
+
+                    # ─── FILTER 1: Learner adaptive threshold (BUG FIX) ───
+                    effective_threshold = learner.get_effective_threshold(config.score_threshold_long)
+                    if signal_result.score < effective_threshold:
+                        skip = True
+                        skip_reason = f"Score {signal_result.score:.1f} < learner threshold {effective_threshold:.1f}"
+
+                    # ─── FILTER 2: Mandatory HTF alignment ───
+                    # NEVER trade against the macro trend. Period.
                     if not skip:
-                        # Check anti-HTF filter
+                        htf_f = last_indicators_dict.get("htf_ema_fast", 0)
+                        htf_s = last_indicators_dict.get("htf_ema_slow", 0)
+                        if htf_f > 0 and htf_s > 0:
+                            htf_bullish = htf_f > htf_s
+                            is_long = signal_result.side == Side.LONG
+                            if (is_long and not htf_bullish) or (not is_long and htf_bullish):
+                                skip = True
+                                skip_reason = f"Against HTF trend ({'BULL' if htf_bullish else 'BEAR'})"
+
+                    # ─── FILTER 3: Fee-aware minimum TP check ───
+                    # Binance taker fee: 0.04% × 2 sides = 0.08% of notional
+                    # At leverage L, fee impact on margin = 0.08% × L
+                    # TP must exceed fees for the trade to be profitable
+                    if not skip:
+                        lev = signal_result.recommended_leverage
+                        fee_impact_pct = 0.0008 * lev  # as fraction of margin
+                        atr_pct = last_indicators_dict.get("atr_pct", 0)
+                        if atr_pct > 0:
+                            tp_pct = max(atr_pct * 3.0, 0.004)
+                            tp_margin_pct = tp_pct * lev  # TP as % of margin
+                            net_rr = (tp_margin_pct - fee_impact_pct) / (max(atr_pct * 2.0, 0.003) * lev + fee_impact_pct)
+                            if net_rr < 1.0:
+                                skip = True
+                                skip_reason = f"Fee-adjusted R:R too low ({net_rr:.2f} < 1.0) at {lev}x"
+
+                    # ─── FILTER 4: Max trades per day ───
+                    # Don't overtrade — max 6 trades/day
+                    if not skip:
+                        if risk_manager.total_trades >= 6:
+                            skip = True
+                            skip_reason = f"Max daily trades reached ({risk_manager.total_trades}/6)"
+
+                    # ─── FILTER 5: Learner general filters ───
+                    if not skip:
+                        skip, skip_reason = learner.should_skip_trade(
+                            last_indicators_dict, strategy.last_had_crossover
+                        )
+
+                    # ─── FILTER 6: Learner anti-HTF (adaptive) ───
+                    if not skip:
                         is_long = signal_result.side == Side.LONG
                         if learner.should_skip_against_htf(is_long, last_indicators_dict):
                             skip = True
-                            skip_reason = "Learner: against-HTF trades unprofitable"
+                            skip_reason = "Learner: against-HTF historically unprofitable"
 
                     if skip:
-                        logger.info(f"Trade BLOCKED by learner: {skip_reason}")
-                        status = f"Senal bloqueada: {skip_reason}"
+                        logger.info(f"Trade BLOCKED: {skip_reason}")
+                        status = f"Bloqueada: {skip_reason}"
                     else:
                         # Apply learner leverage adjustment
                         original_lev = signal_result.recommended_leverage
@@ -522,7 +568,6 @@ async def main():
 
                         opened = await position_manager.open_position(signal_result, price)
                         if opened:
-                            # Refresh state after opening
                             free_bal, equity = await compute_equity(exchange, position_manager)
                             state = build_state(
                                 config, free_bal, equity, position_manager, risk_manager,

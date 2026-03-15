@@ -66,6 +66,7 @@ class Position:
     lowest_price: float = 999_999_999.0
     entry_time: float = field(default_factory=time.time)
     pnl_unrealized: float = 0.0
+    atr_pct: float = 0.0  # v4.0: stored for ATR-based trailing stop
 
 
 @dataclass
