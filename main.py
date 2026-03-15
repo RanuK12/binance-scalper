@@ -540,20 +540,19 @@ async def main():
                     # Double-filtering killed too many valid counter-trend scalps.
 
                     # ─── FILTER 3: Fee-aware minimum TP check ───
-                    # Binance taker fee: 0.04% × 2 sides = 0.08% of notional
-                    # At leverage L, fee impact on margin = 0.08% × L
-                    # TP must exceed fees for the trade to be profitable
+                    # v4.2: Relaxed — with 60%+ win rate, R:R 0.5+ is profitable
+                    # Only block trades where fees literally eat the entire TP
                     if not skip:
                         lev = signal_result.recommended_leverage
-                        fee_impact_pct = 0.0008 * lev  # as fraction of margin
+                        fee_impact_pct = 0.0008 * lev
                         atr_pct = last_indicators_dict.get("atr_pct", 0)
                         if atr_pct > 0:
                             tp_pct = max(atr_pct * 3.0, 0.004)
-                            tp_margin_pct = tp_pct * lev  # TP as % of margin
-                            net_rr = (tp_margin_pct - fee_impact_pct) / (max(atr_pct * 2.0, 0.003) * lev + fee_impact_pct)
-                            if net_rr < 1.0:
+                            tp_margin_pct = tp_pct * lev
+                            # Only block if fees eat more than 50% of TP
+                            if fee_impact_pct > tp_margin_pct * 0.5:
                                 skip = True
-                                skip_reason = f"Fee-adjusted R:R too low ({net_rr:.2f} < 1.0) at {lev}x"
+                                skip_reason = f"Fees too high ({fee_impact_pct:.1%} > 50% of TP) at {lev}x"
 
                     # ─── FILTER 4: Max trades per day ───
                     # v4.1: Raised from 6 to 12 — be more active when signals are good
