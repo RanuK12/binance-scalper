@@ -321,8 +321,15 @@ class PositionManager:
                 logger.info("No existing position found on exchange.")
                 return False
 
-            # Debug: log raw position data to understand the structure
-            logger.info(f"Raw exchange position keys: {list(exchange_pos.keys())}")
+            # Debug: log raw position data
+            info = exchange_pos.get("info", {})
+            logger.info(
+                f"Raw position: side={exchange_pos.get('side')}, "
+                f"contracts={exchange_pos.get('contracts')}, "
+                f"entryPrice={exchange_pos.get('entryPrice')}, "
+                f"positionAmt={info.get('positionAmt')}, "
+                f"notional={exchange_pos.get('notional')}"
+            )
 
             # ccxt unified format uses 'side' (string)
             side_str = str(exchange_pos.get("side", "")).lower()
@@ -394,6 +401,42 @@ class PositionManager:
         except Exception as e:
             logger.error(f"Error syncing position from exchange: {e}", exc_info=True)
             return False
+
+    async def verify_position_exists(self) -> bool:
+        """
+        Check if the local position actually exists on Binance.
+        If not, clear the phantom position. Returns True if position is valid.
+        """
+        if self.position is None:
+            return True  # No local position, nothing to verify
+
+        if self.config.dry_run:
+            return True  # Can't verify in dry-run
+
+        try:
+            exchange_pos = await self.exchange.fetch_position()
+            if exchange_pos is None:
+                logger.warning(
+                    "PHANTOM POSITION detected! Local position exists but "
+                    "Binance has NO open position. Clearing local state."
+                )
+                self.position = None
+                return False
+
+            # Verify it's the same side
+            side_str = str(exchange_pos.get("side", "")).lower()
+            if side_str != self.position.side.value:
+                logger.warning(
+                    f"Position side mismatch! Local: {self.position.side.value}, "
+                    f"Exchange: {side_str}. Clearing local state."
+                )
+                self.position = None
+                return False
+
+            return True
+        except Exception as e:
+            logger.error(f"Error verifying position: {e}")
+            return True  # Don't clear on error, assume it exists
 
     @staticmethod
     def _safe_float(val) -> float:

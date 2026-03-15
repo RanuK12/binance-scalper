@@ -139,8 +139,14 @@ class ExchangeClient:
 
         positions = await self.exchange.fetch_positions([self.config.symbol])
         for pos in positions:
-            contracts = float(pos.get("contracts", 0))
-            if contracts > 0:
+            contracts = float(pos.get("contracts", 0) or 0)
+            # Also check raw positionAmt from Binance info
+            info = pos.get("info", {})
+            position_amt = abs(float(info.get("positionAmt", 0) or 0))
+            # Position is real only if it has actual contracts
+            actual_size = max(contracts, position_amt)
+            if actual_size > 0:
+                logger.debug(f"Found position: contracts={contracts}, positionAmt={position_amt}, side={pos.get('side')}")
                 return pos
         return None
 
