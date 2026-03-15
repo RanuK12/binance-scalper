@@ -317,9 +317,11 @@ class AdaptiveLearner:
         elif wr < 0.50:
             self.state.leverage_multiplier = max(0.4, self.state.leverage_multiplier - 0.10)
             adjustments.append(f"Leverage mult down to {self.state.leverage_multiplier:.2f}")
-        elif wr > 0.60 and self.state.leverage_multiplier < 1.0:
-            self.state.leverage_multiplier = min(1.0, self.state.leverage_multiplier + 0.05)
-            adjustments.append(f"Leverage mult up to {self.state.leverage_multiplier:.2f}")
+        elif wr > 0.55 and self.state.leverage_multiplier < 1.15:
+            # v4.1: Faster recovery (+0.10) and allow up to 1.15x when winning
+            bump = 0.10 if wr > 0.65 else 0.07
+            self.state.leverage_multiplier = min(1.15, self.state.leverage_multiplier + bump)
+            adjustments.append(f"Leverage mult up to {self.state.leverage_multiplier:.2f} (WR: {wr*100:.0f}%)")
 
         # ─── Volume Filter ───
         iwr = self.state.indicator_win_rates
@@ -400,9 +402,9 @@ class AdaptiveLearner:
         return base_threshold + self.state.score_threshold_adj
 
     def get_effective_leverage(self, computed_leverage: int, base_leverage: int) -> int:
-        """Apply leverage multiplier and floor."""
+        """Apply leverage multiplier and floor. v4.1: allows up to 1.15x boost when winning."""
         adjusted = int(computed_leverage * self.state.leverage_multiplier)
-        return max(base_leverage, min(adjusted, 45))
+        return max(base_leverage, min(adjusted, 50))  # v4.1: cap at 50x when learner boosts
 
     def should_skip_trade(self, indicators: dict, has_strong_signal: bool) -> tuple[bool, str]:
         """

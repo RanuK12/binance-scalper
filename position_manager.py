@@ -142,14 +142,14 @@ class PositionManager:
         if pos.side == Side.SHORT and current_price <= pos.take_profit:
             return await self._close_position(current_price, "tp")
 
-        # --- TIME-BASED EXIT (v4.0) ---
-        # Scalping positions older than 10 minutes are likely bad entries
+        # --- TIME-BASED EXIT (v4.1) ---
+        # v4.1: Shortened from 10 min to 5 min — scalping should be fast
         age_sec = time.time() - pos.entry_time
-        if age_sec > 600:  # 10 minutes
+        if age_sec > 300:  # 5 minutes
             pnl_pct = pos.pnl_unrealized / ((pos.quantity * pos.entry_price) / pos.leverage) if pos.quantity > 0 else 0
-            if pnl_pct < 0.005:  # less than 0.5% margin profit after 10 min
+            if pnl_pct < 0.005:  # less than 0.5% margin profit after 5 min
                 logger.info(
-                    f"TIME EXIT: Position age {age_sec:.0f}s > 600s with "
+                    f"TIME EXIT: Position age {age_sec:.0f}s > 300s with "
                     f"marginal PnL ({pnl_pct*100:.2f}%)"
                 )
                 return await self._close_position(current_price, "timeout")

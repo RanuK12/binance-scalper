@@ -531,11 +531,11 @@ async def main():
                                 skip_reason = f"Fee-adjusted R:R too low ({net_rr:.2f} < 1.0) at {lev}x"
 
                     # ─── FILTER 4: Max trades per day ───
-                    # Don't overtrade — max 6 trades/day
+                    # v4.1: Raised from 6 to 12 — be more active when signals are good
                     if not skip:
-                        if risk_manager.total_trades >= 6:
+                        if risk_manager.total_trades >= 12:
                             skip = True
-                            skip_reason = f"Max daily trades reached ({risk_manager.total_trades}/6)"
+                            skip_reason = f"Max daily trades reached ({risk_manager.total_trades}/12)"
 
                     # ─── FILTER 5: Learner general filters ───
                     if not skip:

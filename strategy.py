@@ -571,10 +571,10 @@ class ScalpingStrategy:
         threshold_long = max(cfg.score_threshold_long, 4.0)
         threshold_short = max(cfg.score_threshold_short, 4.0)
 
-        # v4.0: Require minimum score GAP — avoid ambiguous signals
-        # If both sides are close, the signal is not clear enough
+        # v4.1: Reduced score gap — be aggressive when confident
+        # Too high a gap blocks good trades; 0.8 filters only truly ambiguous ones
         score_gap = abs(long_score - short_score)
-        min_gap = 1.5  # need at least 1.5 pts difference
+        min_gap = 0.8  # v4.1: was 1.5, lowered for aggressive-but-smart approach
 
         if long_score >= threshold_long and long_score > short_score and score_gap >= min_gap:
             self.last_had_crossover = has_long_crossover
