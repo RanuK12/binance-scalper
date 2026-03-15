@@ -36,9 +36,9 @@ class BotConfig:
     volume_avg_period: int = 20
     orderbook_depth: int = 10
 
-    # --- Scoring weights (v3.0) ---
-    score_threshold_long: float = 3.0
-    score_threshold_short: float = 3.0
+    # --- Scoring weights (v4.0) ---
+    score_threshold_long: float = 4.0
+    score_threshold_short: float = 4.0
     w_ema_cross: float = 2.0
     w_rsi: float = 1.5
     w_volume: float = 1.0
