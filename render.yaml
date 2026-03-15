@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: binance-scalper
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      - key: TESTNET
+        value: "false"
+      - key: DRY_RUN
+        value: "false"
+      - key: PYTHONUNBUFFERED
+        value: "1"
