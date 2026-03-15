@@ -76,6 +76,9 @@ class ExchangeClient:
         self.min_qty: float = 0.001
         self._current_leverage: int = config.leverage
 
+        # Auto-proxy tracking
+        self._auto_proxy_attempted: bool = False
+
         # Dry-run state
         self._dry_balance: float = 10.0
         self._dry_position: dict | None = None
@@ -145,8 +148,12 @@ class ExchangeClient:
             if connected:
                 break
 
-            # All hostnames failed — if geo-blocked, try auto-proxy before giving up
-            if geo_blocked and attempt == 1 and not self.exchange.httpsProxy and not self.exchange.socksProxy:
+            # All hostnames failed — if geo-blocked, try auto-proxy
+            if geo_blocked and not self._auto_proxy_attempted:
+                self._auto_proxy_attempted = True
+                # Clear any existing non-working proxy first
+                self.exchange.httpsProxy = None
+                self.exchange.socksProxy = None
                 logger.info("All hostnames geo-blocked. Trying auto-proxy discovery...")
                 proxy = await find_working_proxy()
                 if proxy:
