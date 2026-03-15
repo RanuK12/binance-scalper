@@ -320,9 +320,25 @@ async def main():
     print(f"  Dashboard: http://0.0.0.0:{dashboard_port}")
     print("=" * 70 + "\n")
 
-    # Initialize components
+    # Initialize components — retry forever until connected
     exchange = ExchangeClient(config)
-    await exchange.initialize()
+    for startup_attempt in range(1, 100):
+        try:
+            await exchange.initialize()
+            break
+        except Exception as e:
+            wait = min(60, 10 * startup_attempt)
+            logger.error(
+                f"Exchange init failed (startup attempt {startup_attempt}): {e}. "
+                f"Retrying in {wait}s..."
+            )
+            # Close and recreate exchange to reset connection state
+            try:
+                await exchange.close()
+            except Exception:
+                pass
+            await asyncio.sleep(wait)
+            exchange = ExchangeClient(config)
 
     initial_balance = await exchange.fetch_balance()
     logger.info(f"Initial free balance: ${initial_balance:.4f}")
