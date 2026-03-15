@@ -15,6 +15,7 @@ from utils import retry_async, round_quantity, round_price
 logger = logging.getLogger("scalper")
 
 # Alternative Binance hostnames for geo-restricted regions
+# These replace the base domain (binance.com → binance.me, etc.)
 _BINANCE_HOSTNAMES = [
     None,           # default (fapi.binance.com)
     "binance.me",
@@ -32,19 +33,36 @@ class ExchangeClient:
         self.config = config
         # Allow hostname override via env var
         hostname = os.environ.get("BINANCE_HOSTNAME", "").strip() or None
+        # Proxy support: set HTTP_PROXY, HTTPS_PROXY, or SOCKS_PROXY env var
+        proxy = (
+            os.environ.get("HTTPS_PROXY", "").strip()
+            or os.environ.get("HTTP_PROXY", "").strip()
+            or os.environ.get("SOCKS_PROXY", "").strip()
+            or None
+        )
+
         exchange_opts = {
             "apiKey": config.api_key,
             "secret": config.api_secret,
             "enableRateLimit": True,
-            "timeout": 30000,  # 30s timeout (default 10s too short for Railway)
+            "timeout": 20000,  # 20s timeout per request
             "options": {
                 "defaultType": "future",
                 "fetchCurrencies": False,  # Skip spot API call that gets geo-blocked
+                "fetchMarkets": ["linear"],  # Only load USDT-M futures (faster)
             },
         }
         if hostname:
             exchange_opts["hostname"] = hostname
             logger.info(f"Using custom Binance hostname: {hostname}")
+
+        if proxy:
+            # ccxt supports http, https, and socks proxies
+            if proxy.startswith("socks"):
+                exchange_opts["socksProxy"] = proxy
+            else:
+                exchange_opts["httpsProxy"] = proxy
+            logger.info(f"Using proxy: {proxy[:30]}...")
 
         self.exchange = ccxt.binanceusdm(exchange_opts)
         if config.testnet:
@@ -65,8 +83,14 @@ class ExchangeClient:
         """Load markets and configure leverage/margin type.
         Retries with alternative hostnames on geo-block (451),
         and retries the entire sequence on timeout with exponential backoff.
+
+        Supports proxy via HTTPS_PROXY / SOCKS_PROXY env vars.
         """
         logger.info("Initializing exchange connection...")
+
+        # Use shorter timeout for probing, then restore for trading
+        original_timeout = self.exchange.timeout
+        self.exchange.timeout = 15000  # 15s for init probes
 
         # Try default hostname first, then alternatives if geo-blocked
         hostnames_to_try = _BINANCE_HOSTNAMES.copy()
@@ -90,19 +114,26 @@ class ExchangeClient:
                     await self.exchange.load_markets()
                     if hostname:
                         logger.info(f"Connected successfully via {hostname}")
+                    else:
+                        logger.info("Connected to Binance (default hostname)")
                     connected = True
                     break  # Success
                 except ccxt.ExchangeNotAvailable as e:
                     last_error = e
                     if "451" in str(e):
-                        logger.warning(f"Geo-blocked{' on ' + hostname if hostname else ''}: {e}")
+                        logger.warning(f"Geo-blocked{' on ' + hostname if hostname else ''}")
                         continue  # Try next hostname
                     else:
-                        raise  # Non-geo-block error, don't retry
-                except (ccxt.RequestTimeout, ccxt.NetworkError, Exception) as e:
+                        logger.warning(f"Exchange unavailable: {e}")
+                        continue  # Try next hostname too
+                except (ccxt.RequestTimeout, ccxt.NetworkError) as e:
                     last_error = e
-                    logger.warning(f"Connection failed{' on ' + hostname if hostname else ''}: {e}")
-                    await asyncio.sleep(1)
+                    err_type = type(e).__name__
+                    logger.warning(f"{err_type}{' on ' + hostname if hostname else ''} (attempt {attempt})")
+                    continue  # Try next hostname
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Unexpected error{' on ' + hostname if hostname else ''}: {e}")
                     continue
 
             if connected:
@@ -110,7 +141,7 @@ class ExchangeClient:
 
             # All hostnames failed this attempt — retry with backoff
             if attempt < max_retries:
-                wait = min(10, 2 ** attempt)
+                wait = min(15, 3 * attempt)
                 logger.warning(
                     f"All hostnames failed (attempt {attempt}/{max_retries}). "
                     f"Retrying in {wait}s..."
@@ -119,9 +150,14 @@ class ExchangeClient:
             else:
                 logger.error(
                     f"Failed to connect after {max_retries} attempts. "
-                    f"Set BINANCE_HOSTNAME env var or check network."
+                    f"Set HTTPS_PROXY or BINANCE_HOSTNAME env var. "
+                    f"Last error: {last_error}"
                 )
+                self.exchange.timeout = original_timeout
                 raise last_error
+
+        # Restore normal timeout for trading operations
+        self.exchange.timeout = original_timeout
 
         market = self.exchange.market(self.config.symbol)
         self.tick_size = float(market.get("precision", {}).get("price", 0.10))
