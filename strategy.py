@@ -223,8 +223,8 @@ class ScalpingStrategy:
         if abs(indicators.macd_histogram) < 5:
             chop_score += 1
 
-        # 3+ chop signals = choppy
-        return chop_score >= 3
+        # v4.2: 4+ chop signals needed (was 3) — less restrictive
+        return chop_score >= 4
 
     def _compute_dynamic_leverage(self, score: float, indicators: IndicatorSnapshot, side: Side) -> int:
         """
@@ -348,10 +348,10 @@ class ScalpingStrategy:
             return None
 
         # ═══════════════════════════════════════════
-        # VOLUME FILTER — skip if dead market (v4.0: stricter)
+        # VOLUME FILTER — v4.2: relaxed for quiet periods
         # ═══════════════════════════════════════════
-        if indicators.volume_ratio < 0.7:
-            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x < 0.7x). Skipping.")
+        if indicators.volume_ratio < 0.4:
+            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x < 0.4x). Skipping.")
             self._prev_indicators = indicators
             return None
 
@@ -567,14 +567,13 @@ class ScalpingStrategy:
         # ═══════════════════════════════════════════
         # DECISION + DYNAMIC LEVERAGE (v4.0: higher bar)
         # ═══════════════════════════════════════════
-        # v4.0: Use 4.0 as base threshold instead of 3.0
-        threshold_long = max(cfg.score_threshold_long, 4.0)
-        threshold_short = max(cfg.score_threshold_short, 4.0)
+        # v4.2: Aggressive — threshold 3.0 to catch more setups
+        threshold_long = cfg.score_threshold_long  # 3.0 from config (was forced to 4.0)
+        threshold_short = cfg.score_threshold_short
 
-        # v4.1: Reduced score gap — be aggressive when confident
-        # Too high a gap blocks good trades; 0.8 filters only truly ambiguous ones
+        # v4.2: Aggressive gap — only block truly tied signals
         score_gap = abs(long_score - short_score)
-        min_gap = 0.8  # v4.1: was 1.5, lowered for aggressive-but-smart approach
+        min_gap = 0.5  # v4.2: was 0.8, lowered to allow more trades
 
         if long_score >= threshold_long and long_score > short_score and score_gap >= min_gap:
             self.last_had_crossover = has_long_crossover

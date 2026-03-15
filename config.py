@@ -36,9 +36,9 @@ class BotConfig:
     volume_avg_period: int = 20
     orderbook_depth: int = 10
 
-    # --- Scoring weights (v4.0) ---
-    score_threshold_long: float = 4.0
-    score_threshold_short: float = 4.0
+    # --- Scoring weights (v4.2: aggressive) ---
+    score_threshold_long: float = 3.0
+    score_threshold_short: float = 3.0
     w_ema_cross: float = 2.0
     w_rsi: float = 1.5
     w_volume: float = 1.0
@@ -57,10 +57,10 @@ class BotConfig:
     trailing_stop_callback_pct: float = 0.002    # trail by 0.2%
     max_daily_loss_pct: float = 0.30             # 30% of starting daily balance
     max_consecutive_losses: int = 4
-    cooldown_seconds: int = 300
+    cooldown_seconds: int = 120  # v4.2: 2min cooldown (was 5min)
 
     # --- Operational ---
-    min_time_between_trades_sec: int = 10
+    min_time_between_trades_sec: int = 5  # v4.2: faster re-entry
     dry_run: bool = False
     log_level: str = "INFO"
     trade_journal_path: str = "trades.csv"
