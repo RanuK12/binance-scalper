@@ -18,7 +18,7 @@ class BotConfig:
 
     # --- Leverage & position ---
     leverage: int = 15                    # base leverage (low confidence)
-    max_leverage: int = 45               # max leverage (extreme confidence)
+    max_leverage: int = 25               # v5.0: capped at 25x (was 45x — too risky)
     margin_type: str = "isolated"
     max_position_pct: float = 1.0
     max_open_positions: int = 1
@@ -50,8 +50,8 @@ class BotConfig:
     w_rsi_divergence: float = 1.5
 
     # --- Risk management ---
-    stop_loss_pct: float = 0.003      # 0.3%
-    take_profit_pct: float = 0.005    # 0.5%
+    stop_loss_pct: float = 0.004      # v5.0: 0.4% (was 0.3%)
+    take_profit_pct: float = 0.008    # v5.0: 0.8% (was 0.5%) — R:R = 2:1
     trailing_stop_enabled: bool = True
     trailing_stop_activation_pct: float = 0.003  # activate after 0.3% profit
     trailing_stop_callback_pct: float = 0.002    # trail by 0.2%

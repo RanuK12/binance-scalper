@@ -142,14 +142,15 @@ class PositionManager:
         if pos.side == Side.SHORT and current_price <= pos.take_profit:
             return await self._close_position(current_price, "tp")
 
-        # --- TIME-BASED EXIT (v4.1) ---
-        # v4.1: Shortened from 10 min to 5 min — scalping should be fast
+        # --- TIME-BASED EXIT (v5.0) ---
+        # v5.0: 15 min timeout, only exit if losing or flat (let winners run)
         age_sec = time.time() - pos.entry_time
-        if age_sec > 300:  # 5 minutes
-            pnl_pct = pos.pnl_unrealized / ((pos.quantity * pos.entry_price) / pos.leverage) if pos.quantity > 0 else 0
-            if pnl_pct < 0.005:  # less than 0.5% margin profit after 5 min
+        if age_sec > 900:  # 15 minutes
+            margin = (pos.quantity * pos.entry_price) / pos.leverage if pos.quantity > 0 else 1
+            pnl_pct = pos.pnl_unrealized / margin
+            if pnl_pct < 0.01:  # less than 1% margin profit after 15 min
                 logger.info(
-                    f"TIME EXIT: Position age {age_sec:.0f}s > 300s with "
+                    f"TIME EXIT: Position age {age_sec:.0f}s > 900s with "
                     f"marginal PnL ({pnl_pct*100:.2f}%)"
                 )
                 return await self._close_position(current_price, "timeout")
@@ -173,10 +174,10 @@ class PositionManager:
         if pos is None:
             return False
 
-        # v4.0: ATR-based trailing distances (adapt to volatility)
+        # v5.0: Wider trailing — let winners run further
         if pos.atr_pct > 0:
-            activation_pct = max(pos.atr_pct * 1.5, 0.003)  # min 0.3%
-            callback_pct = max(pos.atr_pct * 1.0, 0.002)    # min 0.2%
+            activation_pct = max(pos.atr_pct * 3.0, 0.005)  # v5.0: 3x ATR, min 0.5%
+            callback_pct = max(pos.atr_pct * 1.5, 0.003)    # v5.0: 1.5x ATR, min 0.3%
         else:
             activation_pct = self.config.trailing_stop_activation_pct
             callback_pct = self.config.trailing_stop_callback_pct

@@ -94,15 +94,15 @@ class RiskManager:
         Uses ATR-based dynamic SL/TP when available.
         """
         if atr_pct > 0:
-            # Dynamic SL/TP based on ATR — adapts to current volatility
-            dynamic_sl = atr_pct * 2.0   # v4.0: was 1.5, now 2.0 ATR for more room
-            dynamic_tp = atr_pct * 3.0   # v4.0: was 2.5, now 3.0 ATR — R:R = 1.5
-            # Clamp within safe bounds — wider minimums
-            sl_pct = max(0.003, min(dynamic_sl, 0.008))   # v4.0: min 0.3% (was 0.15%)
-            tp_pct = max(0.004, min(dynamic_tp, 0.012))   # v4.0: min 0.4% (was 0.25%)
+            # v5.0: Wider targets — let trades breathe
+            dynamic_sl = atr_pct * 2.5   # v5.0: 2.5 ATR (was 2.0)
+            dynamic_tp = atr_pct * 5.0   # v5.0: 5.0 ATR — R:R = 2.0
+            # Wider minimums to survive noise
+            sl_pct = max(0.004, min(dynamic_sl, 0.010))   # v5.0: min 0.4% (was 0.3%)
+            tp_pct = max(0.008, min(dynamic_tp, 0.020))   # v5.0: min 0.8% (was 0.4%)
         else:
-            sl_pct = max(self.config.stop_loss_pct, 0.003)  # floor at 0.3%
-            tp_pct = max(self.config.take_profit_pct, 0.004)
+            sl_pct = max(self.config.stop_loss_pct, 0.004)  # v5.0: floor at 0.4%
+            tp_pct = max(self.config.take_profit_pct, 0.008)  # v5.0: floor at 0.8%
 
         if side == Side.LONG:
             sl = entry_price * (1 - sl_pct)
