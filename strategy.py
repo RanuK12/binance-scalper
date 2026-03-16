@@ -1,17 +1,12 @@
 """
-Strategy v4.0 — Multi-indicator scoring with self-learning integration.
-=======================================================================
-Full analytical brain: EMA crossover, RSI + divergence, MACD momentum,
-Bollinger Bands squeeze, ATR dynamic SL/TP, VWAP, volume delta,
-order book imbalance, higher timeframe trend, exhaustion filter,
-anti-chop regime detection. Dynamic leverage 15x-45x based on confluence.
-
-v4.0 changes:
-- Higher base threshold (4.0 vs 3.0) — need more confluence
-- Strong signal tracking (crossovers/divergences)
-- Volume scoring is directional only (no longer adds to both sides)
-- Learner integration for adaptive thresholds and leverage
-- Stricter anti-chop and volume filters
+Strategy v5.0 — Trend-following with strict risk management.
+=============================================================
+v5.0 changes:
+- HTF trend BLOCKS counter-trend trades (was only -0.5 penalty)
+- Score gap raised to 1.5 (was 0.5) — only clear signals
+- Max leverage capped at 25x (was 45x)
+- TP widened to 5x ATR, R:R = 2:1 (was 3x ATR, R:R = 1.5)
+- Time exit raised to 15 min (was 5 min) — let trades develop
 """
 
 import logging
@@ -523,17 +518,21 @@ class ScalpingStrategy:
 
         # ═══════════════════════════════════════════
         # 9. HIGHER TIMEFRAME TREND (weight: 1.0)
+        # v5.0: HARD BLOCK against HTF trend — no more weak penalties
         # ═══════════════════════════════════════════
         htf_bullish = indicators.htf_ema_fast > indicators.htf_ema_slow
         if htf_bullish:
             long_score += cfg.w_htf_trend
             reasons_long.append(f"HTF trend UP +{cfg.w_htf_trend}")
-            # Penalty for shorting against HTF
-            short_score -= cfg.w_htf_trend * 0.5
+            # HARD penalty: make it nearly impossible to short in uptrend
+            short_score -= 2.0
+            reasons_short.append("HTF BLOCK (uptrend) -2.0")
         else:
             short_score += cfg.w_htf_trend
             reasons_short.append(f"HTF trend DOWN +{cfg.w_htf_trend}")
-            long_score -= cfg.w_htf_trend * 0.5
+            # HARD penalty: make it nearly impossible to long in downtrend
+            long_score -= 2.0
+            reasons_long.append("HTF BLOCK (downtrend) -2.0")
 
         # ═══════════════════════════════════════════
         # EXHAUSTION FILTER
@@ -571,9 +570,9 @@ class ScalpingStrategy:
         threshold_long = cfg.score_threshold_long  # 3.0 from config (was forced to 4.0)
         threshold_short = cfg.score_threshold_short
 
-        # v4.2: Aggressive gap — only block truly tied signals
+        # v5.0: Require strong directional conviction — no weak/ambiguous signals
         score_gap = abs(long_score - short_score)
-        min_gap = 0.5  # v4.2: was 0.8, lowered to allow more trades
+        min_gap = 1.5  # v5.0: raised from 0.5 — only trade when direction is clear
 
         if long_score >= threshold_long and long_score > short_score and score_gap >= min_gap:
             self.last_had_crossover = has_long_crossover
