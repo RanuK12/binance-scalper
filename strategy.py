@@ -345,8 +345,8 @@ class ScalpingStrategy:
         # ═══════════════════════════════════════════
         # VOLUME FILTER — v4.2: relaxed for quiet periods
         # ═══════════════════════════════════════════
-        if indicators.volume_ratio < 0.4:
-            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x < 0.4x). Skipping.")
+        if indicators.volume_ratio < 0.2:
+            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x < 0.2x). Skipping.")
             self._prev_indicators = indicators
             return None
 
@@ -570,9 +570,9 @@ class ScalpingStrategy:
         threshold_long = cfg.score_threshold_long  # 3.0 from config (was forced to 4.0)
         threshold_short = cfg.score_threshold_short
 
-        # v5.0: Require strong directional conviction — no weak/ambiguous signals
+        # v5.1: Moderate gap — clear direction but not impossibly strict
         score_gap = abs(long_score - short_score)
-        min_gap = 1.5  # v5.0: raised from 0.5 — only trade when direction is clear
+        min_gap = 1.0  # v5.1: was 1.5 (too strict), was 0.5 (too loose)
 
         if long_score >= threshold_long and long_score > short_score and score_gap >= min_gap:
             self.last_had_crossover = has_long_crossover
