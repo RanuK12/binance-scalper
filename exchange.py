@@ -294,23 +294,38 @@ class ExchangeClient:
 
     def calculate_quantity(self, usdt_margin: float, price: float, leverage: int | None = None) -> float:
         """Calculate order quantity from margin amount.
-        v5.2: Removed 1.05 buffer that caused 'margin insufficient' on small balances.
+        v5.2c: Smart qty calc — ensures margin actually covers the rounded qty.
+        BTC at $74k with step 0.001 means qty jumps are $74 each.
         """
         lev = leverage or self._current_leverage
         notional = usdt_margin * lev
-        # Ensure minimum notional — use exact minimum, no buffer
-        if notional < self.min_notional:
-            notional = self.min_notional
-        # Cap notional to what margin can actually support
-        max_notional = usdt_margin * lev
-        notional = min(notional, max_notional)
         qty = notional / price
         qty = round_quantity(qty, self.step_size)
+
         # After rounding, verify notional still meets minimum
         if qty * price < self.min_notional and self.step_size > 0:
             qty += self.step_size
             qty = round_quantity(qty, self.step_size)
-        logger.debug(f"Qty calc: margin=${usdt_margin:.2f} * {lev}x = notional ${notional:.2f} → qty={qty}")
+
+        # v5.2c: CRITICAL — verify we can actually afford this qty
+        required_margin = (qty * price) / lev
+        if required_margin > usdt_margin:
+            # Can't afford the rounded-up qty — try rounding down instead
+            qty_down = round_quantity(notional / price, self.step_size)
+            if qty_down > 0 and qty_down * price >= self.min_notional:
+                qty = qty_down
+                logger.info(f"Qty adjusted down to {qty} to fit margin ${usdt_margin:.2f}")
+            else:
+                # Even rounded down qty doesn't meet min_notional
+                # Return 0 to signal failure
+                logger.warning(
+                    f"Cannot afford min qty: need ${required_margin:.2f} margin, "
+                    f"have ${usdt_margin:.2f}. Min notional=${self.min_notional}, "
+                    f"step={self.step_size}, price=${price:,.2f}, lev={lev}x"
+                )
+                return 0
+
+        logger.info(f"Qty calc: ${usdt_margin:.2f} * {lev}x → qty={qty} (notional=${qty*price:.2f})")
         return qty
 
     async def place_market_order(self, side: Side, quantity: float, price: float | None = None) -> dict:
