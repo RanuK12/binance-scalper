@@ -518,6 +518,7 @@ async def main():
 
                 # If no position and we have a signal, apply ALL filters then open
                 if position_manager.position is None and signal_result is not None:
+                    logger.info(f">>> Signal received: {signal_result.side.value.upper()} score={signal_result.score:.1f} lev={signal_result.recommended_leverage}x — running filters...")
                     skip = False
                     skip_reason = ""
 
@@ -575,9 +576,20 @@ async def main():
                             skip_reason = "Learner: against-HTF historically unprofitable"
 
                     if skip:
-                        logger.info(f"Trade BLOCKED: {skip_reason}")
+                        logger.warning(f">>> Trade BLOCKED: {skip_reason}")
                         status = f"Bloqueada: {skip_reason}"
+                        # v5.2: Update dashboard to show blocking reason
+                        state = build_state(
+                            config, free_bal, equity, position_manager, risk_manager,
+                            price, last_indicators_dict, last_scores, status,
+                            last_score_breakdown, last_analysis,
+                            learner_stats=learner.get_stats(),
+                            current_leverage=exchange._current_leverage,
+                        )
+                        update_shared_state(state)
+                        emit_state_update(state)
                     else:
+                        logger.info(f">>> All filters PASSED. Opening {signal_result.side.value.upper()} position...")
                         # Apply learner leverage adjustment
                         original_lev = signal_result.recommended_leverage
                         adjusted_lev = learner.get_effective_leverage(original_lev, config.leverage)
@@ -591,6 +603,8 @@ async def main():
                             logger.info(f"Learner adjusted leverage: {original_lev}x -> {adjusted_lev}x")
 
                         opened = await position_manager.open_position(signal_result, price)
+                        if not opened:
+                            logger.warning(f">>> position_manager.open_position FAILED (returned False)")
                         if opened:
                             _last_trade_time = time.time()
                             free_bal, equity = await compute_equity(exchange, position_manager)

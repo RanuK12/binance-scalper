@@ -192,34 +192,39 @@ class ScalpingStrategy:
         """
         Detect choppy/ranging market where signals are unreliable.
         Uses BB width squeeze + low volume + RSI near 50.
-        v4.0: stricter detection — catches more chop conditions.
+        v5.2: relaxed — was blocking too many valid trades.
         """
         chop_score = 0
+        reasons = []
 
         # Tight BB = low volatility = chop
         if indicators.bb_width < 0.002:
             chop_score += 2
-        elif indicators.bb_width < 0.004:
+            reasons.append(f"BB tight({indicators.bb_width:.4f})<0.002 +2")
+        elif indicators.bb_width < 0.003:
             chop_score += 1
+            reasons.append(f"BB narrow({indicators.bb_width:.4f})<0.003 +1")
 
         # RSI near 50 = no momentum
-        if 42 < indicators.rsi < 58:
+        if 45 < indicators.rsi < 55:
             chop_score += 1
+            reasons.append(f"RSI flat({indicators.rsi:.0f}) +1")
 
         # Low volume = no interest
-        if indicators.volume_ratio < 0.7:
+        if indicators.volume_ratio < 0.5:
             chop_score += 1
+            reasons.append(f"Vol low({indicators.volume_ratio:.1f}x) +1")
 
         # Low ATR = compressed market
-        if indicators.atr_pct < 0.0008:
+        if indicators.atr_pct < 0.0005:
             chop_score += 1
+            reasons.append(f"ATR low({indicators.atr_pct:.5f}) +1")
 
-        # MACD histogram near zero = no momentum
-        if abs(indicators.macd_histogram) < 5:
-            chop_score += 1
-
-        # v4.2: 4+ chop signals needed (was 3) — less restrictive
-        return chop_score >= 4
+        # v5.2: 5+ chop signals needed (was 4) — much less restrictive
+        is_choppy = chop_score >= 5
+        if chop_score >= 3:
+            logger.debug(f"Chop check: {chop_score}/5 [{', '.join(reasons)}] → {'BLOCKED' if is_choppy else 'OK'}")
+        return is_choppy
 
     def _compute_dynamic_leverage(self, score: float, indicators: IndicatorSnapshot, side: Side) -> int:
         """
@@ -335,18 +340,18 @@ class ScalpingStrategy:
         reasons_short = []
 
         # ═══════════════════════════════════════════
-        # ANTI-CHOP FILTER
+        # ANTI-CHOP FILTER — v5.2: relaxed
         # ═══════════════════════════════════════════
         if self._is_choppy_market(indicators):
-            logger.debug(f"Choppy market detected (BB width: {indicators.bb_width:.4f}). Skipping signals.")
+            logger.info(f"⚠ Choppy market BLOCKED signal (BB: {indicators.bb_width:.4f}, RSI: {indicators.rsi:.0f}, Vol: {indicators.volume_ratio:.1f}x)")
             self._prev_indicators = indicators
             return None
 
         # ═══════════════════════════════════════════
-        # VOLUME FILTER — v4.2: relaxed for quiet periods
+        # VOLUME FILTER — v5.2: very relaxed
         # ═══════════════════════════════════════════
-        if indicators.volume_ratio < 0.2:
-            logger.debug(f"Volume too low ({indicators.volume_ratio:.1f}x < 0.2x). Skipping.")
+        if indicators.volume_ratio < 0.1:
+            logger.info(f"⚠ Volume BLOCKED signal ({indicators.volume_ratio:.1f}x < 0.1x)")
             self._prev_indicators = indicators
             return None
 
@@ -524,26 +529,24 @@ class ScalpingStrategy:
         if htf_bullish:
             long_score += cfg.w_htf_trend
             reasons_long.append(f"HTF trend UP +{cfg.w_htf_trend}")
-            # HARD penalty: make it nearly impossible to short in uptrend
-            short_score -= 2.0
-            reasons_short.append("HTF BLOCK (uptrend) -2.0")
+            # v5.2: softer penalty — still discourages counter-trend but doesn't hard-block
+            short_score -= 1.0
+            reasons_short.append("HTF penalty (uptrend) -1.0")
         else:
             short_score += cfg.w_htf_trend
             reasons_short.append(f"HTF trend DOWN +{cfg.w_htf_trend}")
-            # HARD penalty: make it nearly impossible to long in downtrend
-            long_score -= 2.0
-            reasons_long.append("HTF BLOCK (downtrend) -2.0")
+            long_score -= 1.0
+            reasons_long.append("HTF penalty (downtrend) -1.0")
 
         # ═══════════════════════════════════════════
-        # EXHAUSTION FILTER
+        # EXHAUSTION FILTER — v5.2: reduced penalty, higher threshold
         # ═══════════════════════════════════════════
-        # 5+ consecutive candles same direction = exhaustion risk
-        if indicators.consecutive_green >= 5:
-            penalty = 1.5
+        if indicators.consecutive_green >= 7:
+            penalty = 1.0
             long_score -= penalty
             reasons_long.append(f"EXHAUSTION({indicators.consecutive_green} green) -{penalty}")
-        if indicators.consecutive_red >= 5:
-            penalty = 1.5
+        if indicators.consecutive_red >= 7:
+            penalty = 1.0
             short_score -= penalty
             reasons_short.append(f"EXHAUSTION({indicators.consecutive_red} red) -{penalty}")
 
@@ -570,9 +573,9 @@ class ScalpingStrategy:
         threshold_long = cfg.score_threshold_long  # 3.0 from config (was forced to 4.0)
         threshold_short = cfg.score_threshold_short
 
-        # v5.1: Moderate gap — clear direction but not impossibly strict
+        # v5.2: Low gap — let the score threshold do the filtering
         score_gap = abs(long_score - short_score)
-        min_gap = 1.0  # v5.1: was 1.5 (too strict), was 0.5 (too loose)
+        min_gap = 0.5  # v5.2: was 1.0 (blocked valid trades)
 
         if long_score >= threshold_long and long_score > short_score and score_gap >= min_gap:
             self.last_had_crossover = has_long_crossover
@@ -598,12 +601,17 @@ class ScalpingStrategy:
             )
             return Signal(side=Side.SHORT, score=short_score, indicators=indicators, recommended_leverage=lev)
 
-        logger.debug(
-            f"No signal | Long: {long_score:.1f}/{threshold_long:.1f} | "
-            f"Short: {short_score:.1f}/{threshold_short:.1f} | "
-            f"Gap: {score_gap:.1f}/{min_gap:.1f} | "
-            f"Price: ${indicators.close_price:,.2f} | RSI: {indicators.rsi:.0f} | "
-            f"MACD: {indicators.macd_histogram:+.2f}"
+        # v5.2: Log at INFO level so we can see why signals aren't generated
+        no_signal_reasons = []
+        if long_score < threshold_long and short_score < threshold_short:
+            no_signal_reasons.append(f"scores below threshold (L:{long_score:.1f} S:{short_score:.1f} < {threshold_long:.1f})")
+        if score_gap < min_gap:
+            no_signal_reasons.append(f"gap too small ({score_gap:.1f} < {min_gap:.1f})")
+        logger.info(
+            f"No signal: {' + '.join(no_signal_reasons) if no_signal_reasons else 'unknown'} | "
+            f"L:{long_score:.1f} S:{short_score:.1f} gap:{score_gap:.1f} | "
+            f"RSI:{indicators.rsi:.0f} Vol:{indicators.volume_ratio:.1f}x | "
+            f"HTF:{'BULL' if htf_bullish else 'BEAR'}"
         )
 
         return None
