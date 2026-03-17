@@ -17,8 +17,8 @@ class BotConfig:
     raw_symbol: str = "BTCUSDT"
 
     # --- Leverage & position ---
-    leverage: int = 15                    # base leverage (low confidence)
-    max_leverage: int = 25               # v5.0: capped at 25x (was 45x — too risky)
+    leverage: int = 20                    # v5.2: base 20x (was 15x — $5 balance needs 20x for $100 min notional)
+    max_leverage: int = 30               # v5.2: max 30x (was 25x)
     margin_type: str = "isolated"
     max_position_pct: float = 1.0
     max_open_positions: int = 1
