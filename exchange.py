@@ -293,18 +293,24 @@ class ExchangeClient:
         return None
 
     def calculate_quantity(self, usdt_margin: float, price: float, leverage: int | None = None) -> float:
-        """Calculate order quantity from margin amount."""
+        """Calculate order quantity from margin amount.
+        v5.2: Removed 1.05 buffer that caused 'margin insufficient' on small balances.
+        """
         lev = leverage or self._current_leverage
         notional = usdt_margin * lev
-        # Ensure minimum notional with buffer
+        # Ensure minimum notional — use exact minimum, no buffer
         if notional < self.min_notional:
-            notional = self.min_notional * 1.05
+            notional = self.min_notional
+        # Cap notional to what margin can actually support
+        max_notional = usdt_margin * lev
+        notional = min(notional, max_notional)
         qty = notional / price
         qty = round_quantity(qty, self.step_size)
         # After rounding, verify notional still meets minimum
         if qty * price < self.min_notional and self.step_size > 0:
             qty += self.step_size
             qty = round_quantity(qty, self.step_size)
+        logger.debug(f"Qty calc: margin=${usdt_margin:.2f} * {lev}x = notional ${notional:.2f} → qty={qty}")
         return qty
 
     async def place_market_order(self, side: Side, quantity: float, price: float | None = None) -> dict:

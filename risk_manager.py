@@ -54,10 +54,10 @@ class RiskManager:
         if balance < 1.0:
             return False, f"Balance too low (${balance:.2f})"
 
-        # Check 5: minimum notional check
-        min_margin = 5.0 / self.config.leverage  # $5 min notional
+        # Check 5: minimum notional check — v5.2: use actual Binance min $100
+        min_margin = 100.0 / signal.recommended_leverage
         if balance * self.config.max_position_pct < min_margin:
-            return False, f"Insufficient margin for minimum notional"
+            return False, f"Insufficient margin (${balance:.2f} < ${min_margin:.2f} needed for $100 notional at {signal.recommended_leverage}x)"
 
         return True, "ok"
 
