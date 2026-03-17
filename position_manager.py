@@ -48,16 +48,35 @@ class PositionManager:
             logger.info(f"Trade blocked by risk manager: {reason}")
             return False
 
-        # Set dynamic leverage before opening
+        # v5.2c: Calculate minimum leverage needed for this balance
         trade_leverage = signal.recommended_leverage
+        margin = self.risk_manager.compute_position_size(balance)
+
+        # BTC step_size is 0.001 = ~$74 per step at $74k
+        # Min notional $100 means we need at least 0.002 BTC = ~$148
+        # Required leverage = ceil($148 / margin)
+        min_qty_for_notional = self.exchange.min_notional / current_price
+        # Round up to next step
+        import math
+        steps_needed = math.ceil(min_qty_for_notional / self.exchange.step_size)
+        actual_min_qty = steps_needed * self.exchange.step_size
+        actual_notional = actual_min_qty * current_price
+        min_leverage_needed = math.ceil(actual_notional / margin)
+
+        if min_leverage_needed > trade_leverage:
+            logger.info(
+                f"Leverage auto-boosted: {trade_leverage}x → {min_leverage_needed}x "
+                f"(need ${actual_notional:.0f} notional, margin=${margin:.2f})"
+            )
+            trade_leverage = min(min_leverage_needed, 50)  # cap at 50x
+
         await self.exchange.set_dynamic_leverage(trade_leverage)
 
-        # Calculate position size with dynamic leverage
-        margin = self.risk_manager.compute_position_size(balance)
+        # Calculate position size with adjusted leverage
         quantity = self.exchange.calculate_quantity(margin, current_price, trade_leverage)
 
         if quantity <= 0:
-            logger.warning(f"Calculated quantity is 0. Margin: ${margin:.2f}, Price: ${current_price:,.2f}")
+            logger.warning(f"Calculated quantity is 0. Margin: ${margin:.2f}, Price: ${current_price:,.2f}, Lev: {trade_leverage}x")
             return False
 
         if quantity < self.exchange.min_qty:
