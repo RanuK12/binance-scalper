@@ -33,3 +33,8 @@ python main.py
 
 ## Disclaimer
 Trading de criptomonedas conlleva riesgo sustancial. Este bot es con fines educativos. Usar bajo tu propio riesgo.
+
+
+## Licencia
+
+MIT — © 2026 Ranuk IT Solutions | [ranuk.dev](https://ranuk.dev)
